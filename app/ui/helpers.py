@@ -75,6 +75,37 @@ def load_latest_status(db_file: str = DB_FILE, device_id: str = HEAT_PUMP_DEV_ID
         return {}
 
 
+def _flag_value(status: dict, code: str) -> float:
+    """Zwraca wartość flagi binarnej jako float (0/1).
+
+    Flagi binarne (valve, defrost, fault_flag...) sĄ zapisywane jako val_str
+    ("True"/"False"), a NIE val_num (który jest wtedy None). Ta funkcja czyta
+    val_str z konwersją, z fallbackiem na val_num dla danych liczbowych.
+    """
+    entry = status.get(code)
+    if not entry:
+        return 0.0
+    vs = entry.get("val_str")
+    # val_str bywa pandas nan (float) zamiast None — traktuj jak brak
+    is_missing = vs is None or (isinstance(vs, float) and vs != vs)
+    if not is_missing:
+        s = str(vs).strip().lower()
+        if s in ("true", "1", "1.0", "on"):
+            return 1.0
+        if s in ("false", "0", "0.0", "off", "nan"):
+            return 0.0
+        # val_str numeryczny (np. zone_select)
+        try:
+            f = float(vs)
+            return 0.0 if f != f else f  # nan -> 0
+        except (ValueError, TypeError):
+            return 0.0
+    vn = entry.get("val_num")
+    if vn is None or (isinstance(vn, float) and vn != vn):  # None lub nan
+        return 0.0
+    return float(vn)
+
+
 def get_pump_status(status: dict) -> tuple[str, str, str]:
     """Określa status pompy na podstawie ostatnich wartości.
 
@@ -82,9 +113,10 @@ def get_pump_status(status: dict) -> tuple[str, str, str]:
         (label, color, emoji) — np. ("CO — Grzeje", "#2196F3", "🔥")
     """
     comp_freq = status.get("comp_freq", {}).get("val_num", 0) or 0
-    valve = status.get("valve", {}).get("val_num", 0) or 0
-    defrost = status.get("defrost", {}).get("val_num", 0) or 0
-    fault = status.get("fault", {}).get("val_num", 0) or 0
+    # valve/defrost/fault sĄ zapisywane jako val_str ("True"/"False"), nie val_num!
+    valve = _flag_value(status, "valve")
+    defrost = _flag_value(status, "defrost")
+    fault = _flag_value(status, "fault_flag") or _flag_value(status, "fault")
 
     if fault and fault > 0:
         return "AWARIA", "#e94560", "🚨"

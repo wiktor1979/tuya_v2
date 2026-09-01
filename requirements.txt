@@ -6,7 +6,7 @@ python-dotenv
 requests
 
 # Dashboard
-streamlit==1.44.1
+streamlit==1.61.1
 plotly==6.1.2
 
 # Core

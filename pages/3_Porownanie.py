@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-from app.ui.styles import inject_css
+from app.ui.styles import inject_css, render_about
 from app.ui.helpers import cached_energy
 from app.ui.labels import METRICS
 from app.core.energy import compute_scop
@@ -30,6 +30,8 @@ with st.sidebar:
         active_w = st.number_input("Active [W]", value=DEFAULT_ACTIVE_POWER_W, step=5.0, key="p_aw")
         hidden_w = st.number_input("Hidden power [W]", value=DEFAULT_HIDDEN_POWER_W, step=5.0, key="p_hw")
         sensor_f = st.number_input("Sensor factor", value=DEFAULT_SENSOR_FACTOR, step=0.01, key="p_sf")
+
+    render_about()
 
 cal = dict(cos_phi=cos_phi, standby_power_w=standby_w, active_power_w=active_w,
            hidden_power_w=hidden_w, sensor_factor=sensor_f)

@@ -57,7 +57,7 @@ def inject_css() -> None:
     .temp-bar-label {
         font-size: 0.8rem;
         color: #aaa;
-        width: 110px;
+        width: 55px;
         flex-shrink: 0;
     }
     .temp-bar {
@@ -88,7 +88,7 @@ def inject_css() -> None:
         font-size: 0.95rem;
     }
     .scop-label { color: #aaa; }
-    .scop-value { font-weight: 700; }
+    .scop-value { font-weight: 700; color: #e0e0e0; }
     .scop-total {
         border-top: 1px solid #333;
         padding-top: 0.4rem;
@@ -165,8 +165,62 @@ def render_temp_bar(
     )
 
 
+def render_temp_bar_setpoint(
+    label: str,
+    value: float | None,
+    setpoint: float | None,
+    bar_class: str = "temp-bar-co",
+    max_temp: float = 55.0,
+    min_temp: float = 15.0,
+) -> None:
+    """Jeden pasek: wypełnienie = wartość aktualna, pionowa kreska = nastawa (cel).
+
+    Zastępuje dwa osobne paski (wartość + nastawa). Kreska pokazuje do jakiej
+    temperatury pompa dąży, wypełnienie — gdzie jest teraz.
+    """
+    if value is None:
+        st.markdown(
+            f'<div class="temp-bar-container">'
+            f'<span class="temp-bar-label">{label}</span>'
+            f'<span style="color:#666;">N/A</span></div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    span = (max_temp - min_temp) if max_temp > min_temp else 1.0
+    ratio = (value - min_temp) / span
+    width_pct = min(95, max(6, ratio * 100))
+
+    # Marker nastawy (pozycja w % szerokości toru)
+    marker_html = ""
+    set_txt = ""
+    if setpoint is not None:
+        set_ratio = (setpoint - min_temp) / span
+        set_pct = min(99, max(1, set_ratio * 100))
+        marker_html = (
+            f'<div style="position:absolute;left:{set_pct}%;top:-2px;bottom:-2px;'
+            f'width:3px;background:#fff;box-shadow:0 0 3px rgba(0,0,0,0.6);" '
+            f'title="Nastawa {setpoint:.1f} °C"></div>'
+        )
+        set_txt = f'<span style="color:#aaa;font-size:0.75rem;margin-left:0.4rem;">🎯 {setpoint:.1f}°C</span>'
+
+    st.markdown(
+        f'<div class="temp-bar-container">'
+        f'<span class="temp-bar-label">{label}</span>'
+        f'<div style="position:relative;flex:1;background:#0f1730;border-radius:4px;height:26px;">'
+        f'<div class="temp-bar {bar_class}" style="width:{width_pct}%;height:26px;">'
+        f'{value:.1f} °C</div>'
+        f'{marker_html}'
+        f'</div>'
+        f'{set_txt}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: str = "SCOP") -> None:
-    """Renderuje box z rozbiciem SCOP na CO/CWU/Total."""
+    """Renderuje box SCOP: Total duży na górze z oznaczeniem opłacalności (próg 3.1),
+    pod spodem rozbicie CO / CWU."""
     co_color = STATUS_COLORS["co"]
     cwu_color = STATUS_COLORS["cwu"]
 
@@ -174,23 +228,55 @@ def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: s
         return f"{v:.2f}" if v > 0 else "—"
 
     no_data = scop_co <= 0 and scop_cwu <= 0 and scop_total <= 0
-    hint = '<div style="font-size:0.75rem;color:#666;margin-top:0.4rem;">Pompa nie pracowała w wybranym zakresie</div>' if no_data else ""
+
+    # Kolor i status Total wg progu opłacalności 3.1
+    if scop_total <= 0:
+        total_color = "#888"
+        status_txt = ""
+    elif scop_total >= 3.1:
+        total_color = "#2ECC71"
+        status_txt = '<span style="color:#2ECC71;font-size:0.85rem;font-weight:600;">✓ Opłacalny (≥ 3.1)</span>'
+    else:
+        total_color = "#e94560"
+        status_txt = '<span style="color:#e94560;font-size:0.85rem;font-weight:600;">✗ Poniżej progu 3.1</span>'
+
+    hint = '<div style="font-size:0.75rem;color:#666;margin-top:0.4rem;text-align:center;">Pompa nie pracowała w wybranym zakresie</div>' if no_data else ""
 
     st.markdown(f"""
     <div class="scop-box">
-        <div style="font-size: 0.8rem; color: #aaa; margin-bottom: 0.3rem;">{label}</div>
-        <div class="scop-row">
-            <span class="scop-label">🏠 CO</span>
-            <span class="scop-value" style="color: {co_color};">{fmt(scop_co)}</span>
+        <div style="font-size: 0.8rem; color: #aaa; text-align:center;">{label}</div>
+        <div style="text-align:center;line-height:1.1;margin:0.2rem 0 0.1rem 0;">
+            <span style="font-size:2.2rem;font-weight:800;color:{total_color};">{fmt(scop_total)}</span>
         </div>
-        <div class="scop-row">
-            <span class="scop-label">🚿 CWU</span>
-            <span class="scop-value" style="color: {cwu_color};">{fmt(scop_cwu)}</span>
-        </div>
-        <div class="scop-row scop-total">
-            <span class="scop-label"><strong>Σ Total</strong></span>
-            <span class="scop-value">{fmt(scop_total)}</span>
+        <div style="text-align:center;margin-bottom:0.5rem;">{status_txt}</div>
+        <div style="display:flex;justify-content:space-around;border-top:1px solid #333;padding-top:0.5rem;">
+            <div style="text-align:center;">
+                <div style="font-size:0.75rem;color:#aaa;">🏠 CO</div>
+                <div style="font-size:1.2rem;font-weight:700;color:{co_color};">{fmt(scop_co)}</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:0.75rem;color:#aaa;">🚿 CWU</div>
+                <div style="font-size:1.2rem;font-weight:700;color:{cwu_color};">{fmt(scop_cwu)}</div>
+            </div>
         </div>
         {hint}
     </div>
     """, unsafe_allow_html=True)
+
+
+
+def render_about() -> None:
+    """Wspólna sekcja About / Help w sidebarze — jednakowa na wszystkich stronach.
+
+    Umieszczać wewnątrz `with st.sidebar:` na każdej stronie.
+    """
+    with st.expander("ℹ️ About / Help"):
+        st.markdown("""
+        **Tuya Heat Pump Monitor v2**
+
+        Silnik obliczeniowy: `compute_energy()`
+        - Energia z surowych danych (bez resample)
+        - SCOP liczony jedną funkcją `compute_scop()` (realny, z odliczeniem defrostu)
+        - Ta sama wartość na każdej stronie
+        """)
+        st.page_link("pages/5_Wiedza.py", label="📚 Baza Wiedzy")

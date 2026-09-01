@@ -1,10 +1,13 @@
 """Podstrona: Baza Wiedzy — opisy i analizy dot. wydajności pompy ciepła."""
 import streamlit as st
 
-from app.ui.styles import inject_css
+from app.ui.styles import inject_css, render_about
 
 st.set_page_config(page_title="Baza Wiedzy", layout="wide", page_icon="📚")
 inject_css()
+
+with st.sidebar:
+    render_about()
 
 st.markdown('<h3 style="margin:0;padding:0.2rem 0;">📚 Baza Wiedzy</h3>', unsafe_allow_html=True)
 

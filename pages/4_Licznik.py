@@ -3,13 +3,16 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 
-from app.ui.styles import inject_css
+from app.ui.styles import inject_css, render_about
 from app.config import MANUAL_METER_DEV_ID, DEFAULT_TIME_OFFSET_HOURS
 from db import save_manual_energy_reading
 from app.ui.helpers import cached_energy
 
 st.set_page_config(page_title="Licznik Energii", layout="wide", page_icon="⚡")
 inject_css()
+
+with st.sidebar:
+    render_about()
 
 st.markdown('<h3 style="margin:0;padding:0.2rem 0;">⚡ Fizyczny Licznik Energii</h3>', unsafe_allow_html=True)
 st.caption(f"Odczyty rejestrowane pod ID: `{MANUAL_METER_DEV_ID}`")

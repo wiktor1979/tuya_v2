@@ -12,7 +12,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from app.ui.styles import inject_css
+from app.ui.styles import inject_css, render_about
 from app.ui.analiza_helpers import load_analiza_pivot
 from app.ui import tab_heating_curve
 from app.services.database import get_weather_data
@@ -29,6 +29,7 @@ with st.sidebar:
     if st.button("🔄 Odśwież dane"):
         st.cache_data.clear()
         st.rerun()
+    render_about()
 
 range_hours = {"Dzisiaj": 24, "3 dni": 72, "7 dni": 168, "30 dni": 720, "90 dni": 2160}
 hours_back = range_hours[selected_range]
@@ -92,17 +93,29 @@ with tab_hydr:
     co_mask = df_pivot["Tryb"] == "CO"
     cwu_mask = df_pivot["Tryb"] == "CWU"
 
+    # Tryb w ostatniej próbce — dla niego ΔT jest "aktualny"
+    current_mode = df_pivot["Tryb"].iloc[-1] if "Tryb" in df_pivot.columns else "—"
+    # Normy ΔT zależą od trybu: CO 3-7°C, CWU 5-10°C
+    dt_norm = (3.0, 7.0) if current_mode == "CO" else (5.0, 10.0)
+    mode_mask = co_mask if current_mode == "CO" else cwu_mask
+
     with col1:
-        dt_co = df_pivot.loc[co_mask, "delta_t"].dropna().iloc[-1] if co_mask.any() and safe_col(df_pivot, "delta_t") else None
-        kpi_with_status("ΔT aktualny (CO)", dt_co, "°C", 3.0, 7.0)
+        dt_now = (
+            df_pivot.loc[mode_mask, "delta_t"].dropna().iloc[-1]
+            if mode_mask.any() and safe_col(df_pivot, "delta_t") else None
+        )
+        kpi_with_status(f"ΔT aktualny ({current_mode})", dt_now, "°C", dt_norm[0], dt_norm[1])
     with col2:
-        dt_cwu = df_pivot.loc[cwu_mask, "delta_t"].dropna().iloc[-1] if cwu_mask.any() and safe_col(df_pivot, "delta_t") else None
-        kpi_with_status("ΔT aktualny (CWU)", dt_cwu, "°C", 5.0, 10.0)
+        # ΔT średni w bieżącym trybie za wybrany okres (kontekst do porównania)
+        dt_avg = (
+            df_pivot.loc[mode_mask, "delta_t"].dropna().mean()
+            if mode_mask.any() and safe_col(df_pivot, "delta_t") else None
+        )
+        kpi_with_status(f"ΔT średni ({current_mode})", dt_avg, "°C", dt_norm[0], dt_norm[1])
     with col3:
         flow_last = df_pivot["flow_m3h"].dropna().iloc[-1] * 1000 / 60 if safe_col(df_pivot, "flow_m3h") else None
         kpi_with_status("Przepływ", flow_last, " l/min", 5.0, 25.0)
     with col4:
-        current_mode = df_pivot["Tryb"].iloc[-1] if "Tryb" in df_pivot.columns else "—"
         st.metric("Tryb aktualny", current_mode)
 
     st.divider()
@@ -114,20 +127,26 @@ with tab_hydr:
             x=df_pivot["czas"], y=df_pivot["delta_t"], mode="lines", name="ΔT (°C)",
             line=dict(color="#FF9800", width=2), fill="tozeroy", fillcolor="rgba(255,152,0,0.08)",
         ))
-        fig_dt.add_hrect(y0=3, y1=7, fillcolor="rgba(76,175,80,0.05)", line=dict(width=0),
-                         annotation_text="Norma CO (3-7°C)", annotation_position="top left")
+        # Strefa normy zgodna z bieżącym trybem (te same progi co kafelek ΔT aktualny)
+        fig_dt.add_hrect(y0=dt_norm[0], y1=dt_norm[1], fillcolor="rgba(76,175,80,0.05)", line=dict(width=0),
+                         annotation_text=f"Norma {current_mode} ({dt_norm[0]:.0f}-{dt_norm[1]:.0f}°C)",
+                         annotation_position="top left")
         dt_max = df_pivot["delta_t"].max()
         fig_dt.update_layout(
             yaxis_title="ΔT [°C]", height=350, margin=dict(t=20, b=40), template="plotly_dark",
             xaxis_title="Czas", yaxis=dict(range=[0, max(15, dt_max * 1.2 if dt_max > 0 else 15)]),
         )
         st.plotly_chart(fig_dt, width="stretch")
+        st.caption(
+            f"Strefa normy odpowiada aktualnemu trybowi (**{current_mode}**). "
+            "CO: 3-7°C, CWU: 5-10°C. Wykres pokazuje ΔT dla obu trybów łącznie."
+        )
     else:
         st.info("Brak danych ΔT.")
 
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("##### 💧 Przepływ w czasie")
+        st.markdown("##### 💧 Przepływ i moc generowana w czasie")
         if safe_col(df_pivot, "flow_m3h"):
             flow_lmin = df_pivot["flow_m3h"] * 1000 / 60
             fig_flow = go.Figure()
@@ -135,8 +154,19 @@ with tab_hydr:
                 x=df_pivot["czas"], y=flow_lmin, mode="lines", name="Przepływ (l/min)",
                 line=dict(color="#2196F3", width=2), fill="tozeroy", fillcolor="rgba(33,150,243,0.08)",
             ))
-            fig_flow.update_layout(yaxis_title="Przepływ [l/min]", height=320, margin=dict(t=20, b=40),
-                                   template="plotly_dark", xaxis_title="Czas")
+            # Moc cieplna generowana (P_th) na drugiej osi Y
+            if safe_col(df_pivot, "P_th_kw"):
+                fig_flow.add_trace(go.Scatter(
+                    x=df_pivot["czas"], y=df_pivot["P_th_kw"], mode="lines",
+                    name="Moc generowana (kW)",
+                    line=dict(color="#E74C3C", width=2), yaxis="y2",
+                ))
+            fig_flow.update_layout(
+                yaxis=dict(title="Przepływ [l/min]", side="left"),
+                yaxis2=dict(title="Moc cieplna [kW]", side="right", overlaying="y", showgrid=False),
+                height=320, margin=dict(t=20, b=40), template="plotly_dark", xaxis_title="Czas",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            )
             st.plotly_chart(fig_flow, width="stretch")
         else:
             st.info("Brak danych przepływu.")
@@ -183,30 +213,58 @@ with tab_hydr:
 with tab_comp:
     st.subheader("⚙️ Stabilność i Żywotność Sprężarki")
 
+    st.caption(
+        "Taktowanie oceniamy **tylko dla cykli CO** (ogrzewanie) i **per doba** — "
+        "krótkie cykle CWU (grzanie zasobnika) są normalne i nie są taktowaniem."
+    )
+
+    # --- Analiza cykli: czas + dominujący tryb każdego cyklu ---
+    cycles = []  # (work_period, minuty, tryb, data_lokalna)
     if safe_col(df_pivot, "work_period") and safe_col(df_pivot, "comp_on"):
-        work_periods = df_pivot[df_pivot["comp_on"] == 1].groupby("work_period")["dt_hours"].sum() * 60
-        # pomiń "cykl 0" (przed pierwszym startem)
-        work_periods = work_periods[work_periods.index > 0]
-        avg_cycle_min = work_periods.mean() if len(work_periods) > 0 else None
-        num_starts = len(work_periods)
-    else:
-        work_periods = pd.Series(dtype=float)
-        avg_cycle_min = None
-        num_starts = 0
+        on = df_pivot[df_pivot["comp_on"] == 1]
+        for wpid, grp in on.groupby("work_period"):
+            if wpid == 0:
+                continue
+            mins = grp["dt_hours"].sum() * 60
+            if mins <= 0:
+                continue
+            tryb = grp["Tryb"].mode().iloc[0] if not grp["Tryb"].mode().empty else "?"
+            dzien = grp["czas"].dt.date.mode().iloc[0]
+            cycles.append((wpid, mins, tryb, dzien))
+
+    cyc_df = pd.DataFrame(cycles, columns=["wp", "min", "tryb", "dzien"]) if cycles else pd.DataFrame(columns=["wp", "min", "tryb", "dzien"])
+    co_cycles = cyc_df[cyc_df["tryb"] == "CO"]
+    cwu_cycles = cyc_df[cyc_df["tryb"] == "CWU"]
+
+    # Mediana czasu cyklu CO (odporna na pojedyncze krótkie cykle)
+    median_co = co_cycles["min"].median() if not co_cycles.empty else None
+    median_cwu = cwu_cycles["min"].median() if not cwu_cycles.empty else None
+
+    # Starty CO per doba — główny wskaźnik taktowania
+    starts_co_per_day = co_cycles.groupby("dzien").size() if not co_cycles.empty else pd.Series(dtype=int)
+    max_starts_co_day = int(starts_co_per_day.max()) if not starts_co_per_day.empty else 0
+    days_taktuje = starts_co_per_day[starts_co_per_day > 15] if not starts_co_per_day.empty else pd.Series(dtype=int)
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        kpi_with_status("Średni czas cyklu", avg_cycle_min, " min", 30, 120)
+        # Mediana czasu cyklu CO (nie średnia — odporna na outliery)
+        if median_co is not None:
+            kpi_with_status("Mediana cyklu CO", median_co, " min", 30, 120)
+        else:
+            st.metric("Mediana cyklu CO", "—", help="Brak cykli CO w okresie (latem pompa robi CWU).")
     with col2:
-        total_hours = (df_pivot["czas"].max() - df_pivot["czas"].min()).total_seconds() / 3600 if len(df_pivot) > 1 else 1
-        starts_per_day = num_starts / max(total_hours / 24, 0.01)
-        kpi_with_status("Starty / dobę", starts_per_day, "", 0, 15, fmt=".0f")
+        # Max starty CO na dobę — wskaźnik taktowania
+        if not starts_co_per_day.empty:
+            kpi_with_status("Max starty CO/dobę", float(max_starts_co_day), "", 0, 15, fmt=".0f")
+        else:
+            st.metric("Max starty CO/dobę", "—")
     with col3:
         comp_freq_last = df_pivot["comp_freq"].dropna().iloc[-1] if safe_col(df_pivot, "comp_freq") else None
         st.metric("Częstotliwość spr.", f"{comp_freq_last:.0f} Hz" if comp_freq_last else "—")
     with col4:
-        disc_last = df_pivot["disc_temp"].dropna().iloc[-1] if safe_col(df_pivot, "disc_temp") else None
-        kpi_with_status("Temp. tłoczenia", disc_last, "°C", 40, 90)
+        # Informacyjnie: mediana cyklu CWU (bez oceny — CWU nie taktuje)
+        st.metric("Mediana cyklu CWU", f"{median_cwu:.0f} min" if median_cwu is not None else "—",
+                  help="Informacyjnie. Krótkie cykle CWU są normalne (grzanie zasobnika do nastawy).")
 
     st.divider()
 
@@ -228,45 +286,76 @@ with tab_comp:
 
     col_a, col_b = st.columns(2)
     with col_a:
-        st.markdown("##### 📊 Histogram długości cykli pracy")
-        if len(work_periods) > 2:
+        st.markdown("##### 📊 Histogram długości cykli (CO vs CWU)")
+        if not cyc_df.empty and len(cyc_df) > 2:
             fig_hist = go.Figure()
-            fig_hist.add_trace(go.Histogram(x=work_periods.values, nbinsx=15,
-                                            marker_color="rgba(33,150,243,0.7)", name="Cykle"))
-            fig_hist.add_vline(x=30, line_dash="dash", line_color="rgba(255,152,0,0.8)", annotation_text="Min. 30 min")
-            fig_hist.add_vline(x=60, line_dash="dash", line_color="rgba(76,175,80,0.8)", annotation_text="Idealne 60 min")
+            if not co_cycles.empty:
+                fig_hist.add_trace(go.Histogram(x=co_cycles["min"].values, nbinsx=15,
+                                                marker_color="rgba(33,150,243,0.7)", name="CO"))
+            if not cwu_cycles.empty:
+                fig_hist.add_trace(go.Histogram(x=cwu_cycles["min"].values, nbinsx=15,
+                                                marker_color="rgba(230,126,34,0.6)", name="CWU"))
+            fig_hist.add_vline(x=30, line_dash="dash", line_color="rgba(255,152,0,0.8)", annotation_text="Min. 30 min (CO)")
             fig_hist.update_layout(xaxis_title="Czas cyklu [min]", yaxis_title="Liczba cykli",
-                                   height=320, margin=dict(t=20, b=40), template="plotly_dark")
+                                   height=320, margin=dict(t=20, b=40), template="plotly_dark",
+                                   barmode="overlay", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_hist, width="stretch")
         else:
             st.info("Za mało cykli do histogramu.")
 
     with col_b:
-        st.markdown("##### 📈 Częstotliwość sprężarki (modulacja)")
-        if safe_col(df_pivot, "comp_freq"):
-            fig_freq = go.Figure()
-            fig_freq.add_trace(go.Scatter(
-                x=df_pivot["czas"], y=df_pivot["comp_freq"], mode="lines", name="Częstotliwość (Hz)",
-                line=dict(color="#9C27B0", width=2), fill="tozeroy", fillcolor="rgba(156,39,176,0.08)",
-            ))
-            fig_freq.update_layout(yaxis_title="Częstotliwość [Hz]", xaxis_title="Czas",
-                                   height=320, margin=dict(t=20, b=40), template="plotly_dark")
-            st.plotly_chart(fig_freq, width="stretch")
+        st.markdown("##### 📈 Starty CO na dobę (wskaźnik taktowania)")
+        if not starts_co_per_day.empty:
+            sdf = starts_co_per_day.reset_index()
+            sdf.columns = ["dzien", "starty"]
+            colors = ["#f44336" if v > 15 else "#4CAF50" for v in sdf["starty"]]
+            fig_starts = go.Figure()
+            fig_starts.add_trace(go.Bar(x=sdf["dzien"].astype(str), y=sdf["starty"],
+                                        marker_color=colors, name="Starty CO/dobę"))
+            fig_starts.add_hline(y=15, line_dash="dash", line_color="rgba(255,152,0,0.8)",
+                                 annotation_text="Próg taktowania (15/dobę)")
+            fig_starts.update_layout(xaxis_title="Dzień", yaxis_title="Starty CO",
+                                     height=320, margin=dict(t=20, b=40), template="plotly_dark")
+            st.plotly_chart(fig_starts, width="stretch")
         else:
-            st.info("Brak danych częstotliwości sprężarki.")
+            st.info("Brak cykli CO w okresie (latem pompa pracuje na CWU — taktowanie nieoceniane).")
+
+    # Częstotliwość sprężarki (modulacja) — pełna szerokość pod spodem
+    st.markdown("##### 📈 Częstotliwość sprężarki (modulacja)")
+    if safe_col(df_pivot, "comp_freq"):
+        fig_freq = go.Figure()
+        fig_freq.add_trace(go.Scatter(
+            x=df_pivot["czas"], y=df_pivot["comp_freq"], mode="lines", name="Częstotliwość (Hz)",
+            line=dict(color="#9C27B0", width=2), fill="tozeroy", fillcolor="rgba(156,39,176,0.08)",
+        ))
+        fig_freq.update_layout(yaxis_title="Częstotliwość [Hz]", xaxis_title="Czas",
+                               height=300, margin=dict(t=20, b=40), template="plotly_dark")
+        st.plotly_chart(fig_freq, width="stretch")
+    else:
+        st.info("Brak danych częstotliwości sprężarki.")
 
     st.markdown("##### ⚠️ Alerty taktowania")
-    if avg_cycle_min is not None and avg_cycle_min < 30:
-        st.error(
-            f"🚨 Średni czas cyklu = {avg_cycle_min:.0f} min (minimum 30 min). "
-            "Sprężarka taktuje — sprawdź krzywą grzewczą i bufor ciepła."
+    if co_cycles.empty:
+        st.info(
+            "ℹ️ Brak cykli CO w wybranym okresie — taktowanie nieoceniane. "
+            "Latem pompa pracuje głównie na CWU (krótkie cykle CWU są normalne)."
         )
-    elif starts_per_day > 15:
-        st.warning(f"⚠️ {starts_per_day:.0f} startów/dobę (próg 15). Rozważ obniżenie nastaw lub zwiększenie histerezy.")
+    elif not days_taktuje.empty:
+        # Konkretne doby z taktowaniem (>15 startów CO/dobę)
+        dni_str = ", ".join(f"{d} ({int(n)} startów)" for d, n in days_taktuje.items())
+        st.error(
+            f"🚨 Taktowanie w dniach: {dni_str} (próg 15 startów CO/dobę). "
+            "Sprężarka za często się załącza — sprawdź krzywą grzewczą, bufor ciepła i histerezę."
+        )
+    elif median_co is not None and median_co < 30:
+        st.warning(
+            f"⚠️ Mediana cyklu CO = {median_co:.0f} min (zalecane ≥30 min). "
+            "Cykle CO krótsze niż optymalne — rozważ korektę krzywej grzewczej lub bufor."
+        )
     else:
         st.success(
-            f"✅ Praca sprężarki stabilna — śr. cykl {avg_cycle_min:.0f} min, {starts_per_day:.0f} startów/dobę."
-            if avg_cycle_min else "✅ Brak alertów taktowania."
+            f"✅ Praca CO stabilna — mediana cyklu {median_co:.0f} min, "
+            f"max {max_starts_co_day} startów CO/dobę (próg 15)."
         )
 
 

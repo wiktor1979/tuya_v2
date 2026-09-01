@@ -117,6 +117,9 @@ def load_analiza_pivot(
     # P_th = flow[m3/h] * 4186 * dT / 3600 [W]  (cp wody 4186 J/kgK, 1 m3=1000 kg)
     p_th_w = piv["flow_m3h"].fillna(0) * 1000.0 * 4.186 * piv["delta_t"] / 3.6
     piv["COP"] = np.where((p_el_w > 100) & (p_th_w > 0), p_th_w / p_el_w, np.nan)
+    # Moce w kW (do wykresów). P_th ujemne podczas defrostu (ΔT<0) — fizycznie poprawne.
+    piv["P_th_kw"] = p_th_w / 1000.0
+    piv["P_el_kw"] = p_el_w / 1000.0
 
     # Tryb: CWU gdy valve >= próg, inaczej CO
     valve = piv["valve"].fillna(0)

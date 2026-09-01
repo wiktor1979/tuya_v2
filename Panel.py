@@ -8,20 +8,19 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta
 
-from app.ui.styles import inject_css, render_status_badge, render_temp_bar, render_scop_box
+from app.ui.styles import inject_css, render_status_badge, render_temp_bar, render_scop_box, render_about, render_temp_bar_setpoint
 from app.ui.helpers import (
-    cached_energy,
     load_latest_status,
     get_pump_status,
     get_temp_value,
 )
-from app.ui.labels import METRICS, scop_delta
+from app.ui.labels import METRICS
 from app.config import (
     PARAM_INFO, get_param_label,
     DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
     DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR,
 )
-from app.core.energy import scop_from_result
+from app.core.energy import scop_from_result, compute_energy
 
 
 # --- Konfiguracja strony ---
@@ -50,16 +49,7 @@ with st.sidebar:
         sensor_f = st.number_input("Sensor factor", value=DEFAULT_SENSOR_FACTOR, step=0.01,
                                    help="Korekcja proporcjonalna czujnika. 0.98 = telemetria zawyża ~2% vs licznik.")
 
-    with st.expander("ℹ️ About / Help"):
-        st.markdown("""
-        **Tuya Heat Pump Monitor v2**
-
-        Silnik obliczeniowy: `compute_energy()`
-        - Energia z surowych danych (bez resample)
-        - SCOP liczony jedną funkcją `compute_scop()` (realny, z odliczeniem defrostu)
-        - Ta sama wartość na każdej stronie
-        """)
-        st.page_link("pages/3_Wiedza.py", label="📚 Baza Wiedzy")
+    render_about()
 
 
 # --- Obliczenie dat ---
@@ -79,85 +69,95 @@ cal_params = dict(
 )
 
 
-# --- Dane na żywo ---
-status = load_latest_status()
-pump_label, pump_color, pump_emoji = get_pump_status(status)
+# --- Przycisk odśwież + adaptacyjny interwał auto-refresh (jak v1) ---
+_status_probe = load_latest_status()
+_pump_running = get_pump_status(_status_probe)[0] not in ("Postój", "AWARIA")
+_refresh_sec = 60 if _pump_running else 300
+
+if st.button("🔄 Odśwież dane"):
+    st.rerun()
 
 
-# --- Obliczenie energii (cache 60s) ---
-# Jedno wywołanie (total) — SCOP CO/CWU/total liczymy przez compute_scop() z tego samego wyniku.
-energy = cached_energy(date_from=date_from, date_to=date_to, **cal_params)
+@st.fragment(run_every=_refresh_sec)
+def render_live():
+    """Sekcja danych na żywo — odświeżana automatycznie co _refresh_sec.
 
-scop_total = scop_from_result(energy, scope="total", kind="real")
-scop_co = scop_from_result(energy, scope="co", kind="real")
-scop_cwu = scop_from_result(energy, scope="cwu", kind="real")
+    Pompa pracuje → co 60s, postój → co 300s. Poza fragmentem: sidebar,
+    nagłówek, wykres parametrów (własny cache/multiselect).
+    """
+    # --- Dane na żywo ---
+    status = load_latest_status()
+    pump_label, pump_color, pump_emoji = get_pump_status(status)
 
+    # Status odświeżania z timestampem
+    running = pump_label not in ("Postój", "AWARIA")
+    icon = "🟢" if running else "⚪"
+    txt = "Pompa pracuje — odświeżanie co 1 min" if running else "Pompa stoi — odświeżanie co 5 min"
+    st.caption(f"{icon} {txt} · Odświeżono: {datetime.now().strftime('%H:%M:%S')}")
 
-# === LAYOUT ===
+    # --- Obliczenie energii ---
+    # Wołamy compute_energy() BEZPOŚREDNIO (nie cached_energy) — @st.cache_data
+    # wewnątrz @st.fragment miewa problem z serializacją zwrotu (EnergyResult).
+    # We fragmencie odświeżanym co 60s cache i tak nie daje korzyści.
+    # SCOP CO/CWU/total liczymy przez compute_scop() z tego samego wyniku.
+    energy = compute_energy(date_from=date_from, date_to=date_to, **cal_params)
 
-# --- Header: tytuł + badge statusu w jednej linii ---
-st.markdown(
-    f'<div style="display:flex;align-items:center;gap:1rem;margin-top:0.5rem;margin-bottom:0.5rem;">'
-    f'<h3 style="margin:0;padding:0;">🔥 Pompa Ciepła</h3>'
-    f'<span class="pump-status" style="background:{pump_color}22;color:{pump_color};'
-    f'border:2px solid {pump_color};padding:0.4rem 1rem;">{pump_emoji} {pump_label}</span>'
-    f'</div>',
-    unsafe_allow_html=True,
-)
+    scop_total = scop_from_result(energy, scope="total", kind="real")
+    scop_co = scop_from_result(energy, scope="co", kind="real")
+    scop_cwu = scop_from_result(energy, scope="cwu", kind="real")
 
-# --- COP chwilowy + SCOP + Energia w jednym rzędzie ---
-cop_val = status.get("comp_freq", {}).get("val_num", 0) or 0
-p_el_raw = ((status.get("ac_vol", {}).get("val_num", 0) or 0)
-            * ((status.get("ac_curr", {}).get("val_num", 0) or 0) / 10) * cos_phi)
-flow = (status.get("flow_rate", {}).get("val_num", 0) or 0) / 10
-t_out = get_temp_value(status, "out_water_temp") or 0
-t_in = get_temp_value(status, "in_water_temp") or 0
-p_th_raw = flow * 4.186 * (t_out - t_in) / 3.6 * 1000
-cop_instant = p_th_raw / p_el_raw if p_el_raw > 100 and p_th_raw > 0 else 0
+    # --- Header: tytuł + badge statusu w jednej linii ---
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:1rem;margin-top:0.5rem;margin-bottom:0.5rem;">'
+        f'<h3 style="margin:0;padding:0;">🔥 Pompa Ciepła</h3>'
+        f'<span class="pump-status" style="background:{pump_color}22;color:{pump_color};'
+        f'border:2px solid {pump_color};padding:0.4rem 1rem;">{pump_emoji} {pump_label}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    cop_display = f"{cop_instant:.2f}" if cop_instant > 0.5 else "—"
-    st.metric(METRICS["cop_instant"]["label"], cop_display,
-              help=METRICS["cop_instant"]["help"])
-with c2:
-    scop_display = f"{scop_total:.2f}" if scop_total > 0 else "—"
-    delta, delta_color = scop_delta(scop_total)
-    st.metric(f"SCOP {selected_range}", scop_display, delta=delta, delta_color=delta_color,
-              help=METRICS["scop_range"]["help"])
-with c3:
-    st.metric(METRICS["e_el_short"]["label"], f"{energy.e_el_total:.1f} kWh",
-              help=METRICS["e_el_short"]["help"])
-with c4:
-    st.metric(METRICS["e_th_short"]["label"], f"{energy.e_th_total:.1f} kWh",
-              help=METRICS["e_th_short"]["help"])
+    # --- COP chwilowy (do metryki) ---
+    cop_val = status.get("comp_freq", {}).get("val_num", 0) or 0
+    p_el_raw = ((status.get("ac_vol", {}).get("val_num", 0) or 0)
+                * ((status.get("ac_curr", {}).get("val_num", 0) or 0) / 10) * cos_phi)
+    flow = (status.get("flow_rate", {}).get("val_num", 0) or 0) / 10
+    t_out = get_temp_value(status, "out_water_temp") or 0
+    t_in = get_temp_value(status, "in_water_temp") or 0
+    p_th_raw = flow * 4.186 * (t_out - t_in) / 3.6 * 1000
+    cop_instant = p_th_raw / p_el_raw if p_el_raw > 100 and p_th_raw > 0 else 0
 
+    # --- Górny rząd: lewo = SCOP box, prawo = 3 metryki (COP/Energia/Ciepło) ---
+    col_scop, col_metrics = st.columns([2, 3])
+    with col_scop:
+        render_scop_box(
+            scop_co=scop_co if energy.e_th_co >= 1.0 else 0,
+            scop_cwu=scop_cwu if energy.e_th_cwu >= 1.0 else 0,
+            scop_total=scop_total,
+            label=f"SCOP {selected_range}",
+        )
+    with col_metrics:
+        cop_display = f"{cop_instant:.2f}" if cop_instant > 0.5 else "—"
+        st.metric(METRICS["cop_instant"]["label"], cop_display,
+                  help=METRICS["cop_instant"]["help"])
+        st.metric(METRICS["e_el_short"]["label"], f"{energy.e_el_total:.1f} kWh",
+                  help=METRICS["e_el_short"]["help"])
+        st.metric(METRICS["e_th_short"]["label"], f"{energy.e_th_total:.1f} kWh",
+                  help=METRICS["e_th_short"]["help"])
 
-# --- Temperatury + SCOP box w dwóch kolumnach ---
-col_temp, col_scop = st.columns([3, 2])
-
-with col_temp:
+    # --- Temperatury CO / CWU (wartość + marker nastawy) — pełna szerokość ---
     t_supply = get_temp_value(status, "out_water_temp")
     t_set_co = get_temp_value(status, "heat_temp_set") or get_temp_value(status, "idr_temp_set")
     t_cwu = get_temp_value(status, "tank_temp")
     t_set_cwu = get_temp_value(status, "hot_water_temp_set")
 
-    render_temp_bar("Zasilanie CO", t_supply, "temp-bar-co")
-    render_temp_bar("🎯 Nastawa CO", t_set_co, "temp-bar-co", is_setpoint=True)
-    render_temp_bar("Woda CWU", t_cwu, "temp-bar-cwu")
-    render_temp_bar("🎯 Nastawa CWU", t_set_cwu, "temp-bar-cwu", is_setpoint=True)
+    render_temp_bar_setpoint("🔥 CO", t_supply, t_set_co, "temp-bar-co", max_temp=55.0, min_temp=15.0)
+    render_temp_bar_setpoint("🚿 CWU", t_cwu, t_set_cwu, "temp-bar-cwu", max_temp=60.0, min_temp=15.0)
 
-with col_scop:
-    render_scop_box(
-        scop_co=scop_co if energy.e_th_co >= 1.0 else 0,
-        scop_cwu=scop_cwu if energy.e_th_cwu >= 1.0 else 0,
-        scop_total=scop_total,
-        label=f"SCOP {selected_range}",
-    )
-    # Mini przycisk licznika pod SCOP boxem
-    st.markdown("")
     if st.button("⚡ Wpisz stan licznika"):
-        st.switch_page("pages/2_Licznik.py")
+        st.switch_page("pages/4_Licznik.py")
+
+
+render_live()
 
 
 # --- Wykres parametrów (desktop) ---

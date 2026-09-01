@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-from app.ui.styles import inject_css, render_scop_box, STATUS_COLORS
+from app.ui.styles import inject_css, render_scop_box, STATUS_COLORS, render_about
 from app.ui.helpers import cached_energy
 from app.ui.analiza_helpers import load_analiza_pivot
 from app.ui.labels import METRICS, scop_delta, e_el_help_with_standby
@@ -19,7 +19,7 @@ from app.core.energy import scop_from_result
 st.set_page_config(page_title="Bilans i SCOP", layout="wide", page_icon="⚡")
 inject_css()
 
-st.markdown('<h3 style="margin:0;padding:0.2rem 0;">⚡ Bilans Energetyczny i SCOP</h3>', unsafe_allow_html=True)
+st.markdown('<h3 style="margin:0;padding:0.2rem 0;">⚡ Bilans i SCOP</h3>', unsafe_allow_html=True)
 
 # --- Sidebar ---
 with st.sidebar:
@@ -36,6 +36,8 @@ with st.sidebar:
         hidden_w = st.number_input("Hidden power [W]", value=DEFAULT_HIDDEN_POWER_W, step=5.0, key="b_hw")
         sensor_f = st.number_input("Sensor factor", value=DEFAULT_SENSOR_FACTOR, step=0.01, key="b_sf")
 
+    render_about()
+
 
 # --- Obliczenie dat ---
 now = datetime.now()
@@ -46,6 +48,13 @@ if days_back == 0:
     date_from = now.strftime("%Y-%m-%d")
 else:
     date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+# Widoczna informacja o okresie (na telefonie sidebar jest schowany)
+if days_back == 0:
+    _okres = f"📅 Okres: **Dzisiaj** ({now.strftime('%Y-%m-%d')})"
+else:
+    _okres = f"📅 Okres: **{selected_range}** ({date_from} — {now.strftime('%Y-%m-%d')})"
+st.caption(_okres)
 
 cal = dict(cos_phi=cos_phi, standby_power_w=standby_w, active_power_w=active_w,
            hidden_power_w=hidden_w, sensor_factor=sensor_f)

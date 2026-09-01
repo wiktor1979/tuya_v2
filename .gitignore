@@ -5,3 +5,6 @@ data/*.db
 data/*.db-*
 .env
 *.egg-info/
+/data
+/data
+start_local.bat

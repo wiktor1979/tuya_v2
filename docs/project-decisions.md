@@ -2,13 +2,16 @@
 
 ## Lokalizacje projektów
 - v1 (produkcja): C:\tuya
-- v2 (nowy silnik): C:\kiro\tuva_v2 (katalog zmieniony 2026-09-01 z tuya_v2 na tuva_v2)
-- Dokumentacja: C:\tuya\docs\v2-plan.html, C:\kiro\tuva_v2\docs\ui-spec.html
+- v2 (nowy silnik): C:\kiro\tuya_v2 (katalog bywa przenoszony tuya_v2<->tuva_v2; aktualnie tuya_v2)
+- Dokumentacja: C:\tuya\docs\v2-plan.html, C:\kiro\tuya_v2\docs\ui-spec.html
 - Baza danych: data/tuya_telemetry.db (SQLite, WAL)
 - Deploy: Fly.io (1GB RAM, shared CPU)
 
 ## Deploy Fly.io (przygotowanie 2026-09-01)
-- App: 'scop', region 'arn', wolumen 'tuya_data' montowany pod /data
+- !!! ZASADA (2026-09-01): KAZDY deploy (`fly deploy`) wymaga JASNEJ, WYRAZNEJ zgody uzytkownika
+  ZA KAZDYM RAZEM. Dotyczy takze poprawek/redeployow po nieudanym deployu — nie sa "kontynuacja"
+  poprzedniej zgody. Bez wyraznego "tak, deployuj" — NIE deployowac.
+- App: 'scop', region 'ams', wolumen 'tuya_data' montowany pod /data
 - ZROBIONE:
   - .dockerignore: wyklucza .env (sekret!), data/*.db, __pycache__, .pytest_cache, *.png, docs/, .git
     (bez tego .env i baza trafialy do obrazu — wyciek sekretu + nadpisanie wolumenu)
@@ -192,6 +195,30 @@
   amb_temp/comp_freq/Tryb/heat_temp_set/out_water_temp/COP/czas — dostarcza je load_analiza_pivot.
 - Weryfikacja 2026-09-01: pivot all-time 47108 wierszy, wszystkie wymagane kolumny OK,
   COP mediana 4.06, 39 cykli sprezarki, 0 defrostow (lato). Kompilacja 3 plikow OK.
+
+## Zmiany UI i produkcja (2026-09-01, wdrozone na scop v132)
+- Kolejnosc stron: Panel -> Bilans -> Analiza -> Porownanie -> Licznik -> Wiedza
+  (pliki: 1_Bilans, 2_Analiza, 3_Porownanie, 4_Licznik, 5_Wiedza; referencje page_link/switch_page zaktualizowane).
+- About/Help: wspolny komponent render_about() w styles.py, na KAZDEJ stronie w sidebarze
+  (opcja 1 — Wiedza zostaje w menu + link w About).
+- Panel: auto-refresh przez @st.fragment(run_every=) — 60s praca / 300s postoj + przycisk "Odswiez dane".
+  UWAGA: we fragmencie wolamy compute_energy() BEZPOSREDNIO (nie cached_energy) — @st.cache_data
+  w kontekscie @st.fragment rzucalo UnserializableReturnValueError na EnergyResult (Streamlit 1.61.1).
+- Panel: fix klasyfikacji trybu — valve/defrost czytane z val_str (bool), nie val_num (helper _flag_value).
+  Wczesniej zawsze pokazywalo "CO — Grzeje" nawet podczas CWU.
+- Panel layout: SCOP box po LEWEJ (Total duzy z oznaczeniem opłacalnosci ≥3.1 zielony/<3.1 czerwony +
+  CO/CWU pod spodem), 3 metryki (COP/Energia/Cieplo) pionowo po prawej. Temperatury: 2 paski CO/CWU
+  z markerem nastawy (render_temp_bar_setpoint) zamiast 4 osobnych. Usunieto duplikat metryki SCOP.
+- Bilans: naglowek "Bilans i SCOP" (krotszy na telefon) + podpis okresu (📅 widoczny bez sidebaru) +
+  wykres "COP chwilowy w czasie" przed SCOP dziennym.
+- Analiza/Hydraulika: jeden kafelek ΔT aktualny wg biezacego trybu + ΔT sredni; strefa normy na
+  wykresie ΔT zsynchronizowana z trybem (CO 3-7, CWU 5-10). Wykres przeplywu + linia "moc generowana"
+  (P_th_kw, druga os Y). Dodano kolumny P_th_kw/P_el_kw w load_analiza_pivot.
+- Analiza/Sprezarka: PRZEBUDOWA taktowania. Alarm taktowania liczony TYLKO z cykli CO i PER DOBA
+  (>15 startow CO/dobe), nie ze sredniej po oknie (mylace latem). Mediana czasu cyklu CO (odporna na
+  outliery), cykle CWU informacyjnie bez oceny (CWU nie taktuje). Wykres startow CO/dobe + histogram CO vs CWU.
+- requirements: streamlit 1.44.1 -> 1.61.1 (width="stretch" nie dzialal w 1.44; podniesiono do wersji lokalnej).
+  Dockerfile python:3.11 -> 3.12 (zgodnie z pyproject requires-python>=3.12).
 
 
 ## Parametry pompy ciepla — opisy i histereza DeadbandFilter
