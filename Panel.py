@@ -142,42 +142,46 @@ def render_live():
     p_th_raw = flow * 4.186 * (t_out - t_in) / 3.6 * 1000
     cop_instant = p_th_raw / p_el_raw if p_el_raw > 100 and p_th_raw > 0 else 0
 
-    # --- Układ (mobile-first): SCOP pełna szerokość, COP pełna szerokość,
-    #     poniżej 4 metryki w 2 kolumnach (moce chwilowe / energia okresowa). ---
-    render_scop_box(
-        scop_co=scop_co if energy.e_th_co >= 1.0 else 0,
-        scop_cwu=scop_cwu if energy.e_th_cwu >= 1.0 else 0,
-        scop_total=scop_total,
-        label=f"SCOP {selected_range}",
-        running=running,
-    )
+    # --- Układ responsywny: bazowo SCOP (lewo) + metryki (prawo) w 2 kolumnach
+    #     — dobre na desktop. Na wąskim ekranie CSS (.st-key-panel_top) przestawia
+    #     ten blok w pion: SCOP pełna szer. → metryki pod spodem. ---
+    with st.container(key="panel_top"):
+        col_scop, col_metrics = st.columns([2, 3])
+        with col_scop:
+            render_scop_box(
+                scop_co=scop_co if energy.e_th_co >= 1.0 else 0,
+                scop_cwu=scop_cwu if energy.e_th_cwu >= 1.0 else 0,
+                scop_total=scop_total,
+                label=f"SCOP {selected_range}",
+                running=running,
+            )
+        with col_metrics:
+            # COP chwilowy — pełna szerokość kolumny metryk
+            cop_display = f"{cop_instant:.2f}" if cop_instant > 0.5 else "—"
+            st.metric(METRICS["cop_instant"]["label"], cop_display,
+                      help=METRICS["cop_instant"]["help"])
 
-    # COP chwilowy — pełna szerokość
-    cop_display = f"{cop_instant:.2f}" if cop_instant > 0.5 else "—"
-    st.metric(METRICS["cop_instant"]["label"], cop_display,
-              help=METRICS["cop_instant"]["help"])
+            # Chwilowe moce (kW) — pobór prądu i moc cieplna pompy, obok siebie
+            p_el_kw = p_el_raw / 1000
+            p_th_kw = p_th_raw / 1000
+            p_el_display = f"{p_el_kw:.2f} kW" if p_el_raw > 100 else "—"
+            p_th_display = f"{p_th_kw:.2f} kW" if (p_el_raw > 100 and p_th_raw > 0) else "—"
+            col_pel, col_pth = st.columns(2)
+            with col_pel:
+                st.metric(METRICS["p_el_instant"]["label"], p_el_display,
+                          help=METRICS["p_el_instant"]["help"])
+            with col_pth:
+                st.metric(METRICS["p_th_instant"]["label"], p_th_display,
+                          help=METRICS["p_th_instant"]["help"])
 
-    # Chwilowe moce (kW) — pobór prądu i moc cieplna pompy, obok siebie
-    p_el_kw = p_el_raw / 1000
-    p_th_kw = p_th_raw / 1000
-    p_el_display = f"{p_el_kw:.2f} kW" if p_el_raw > 100 else "—"
-    p_th_display = f"{p_th_kw:.2f} kW" if (p_el_raw > 100 and p_th_raw > 0) else "—"
-    col_pel, col_pth = st.columns(2)
-    with col_pel:
-        st.metric(METRICS["p_el_instant"]["label"], p_el_display,
-                  help=METRICS["p_el_instant"]["help"])
-    with col_pth:
-        st.metric(METRICS["p_th_instant"]["label"], p_th_display,
-                  help=METRICS["p_th_instant"]["help"])
-
-    # Energia / Ciepło okresowe — obok siebie (2 kolumny, oszczędność miejsca na telefonie)
-    col_eel, col_eth = st.columns(2)
-    with col_eel:
-        st.metric(METRICS["e_el_short"]["label"], f"{energy.e_el_total:.1f} kWh",
-                  help=METRICS["e_el_short"]["help"])
-    with col_eth:
-        st.metric(METRICS["e_th_short"]["label"], f"{energy.e_th_total:.1f} kWh",
-                  help=METRICS["e_th_short"]["help"])
+            # Energia / Ciepło okresowe — obok siebie (2 kolumny)
+            col_eel, col_eth = st.columns(2)
+            with col_eel:
+                st.metric(METRICS["e_el_short"]["label"], f"{energy.e_el_total:.1f} kWh",
+                          help=METRICS["e_el_short"]["help"])
+            with col_eth:
+                st.metric(METRICS["e_th_short"]["label"], f"{energy.e_th_total:.1f} kWh",
+                          help=METRICS["e_th_short"]["help"])
 
     # --- Temperatury CO / CWU (wartość + marker nastawy) — pełna szerokość ---
     t_supply = get_temp_value(status, "out_water_temp")

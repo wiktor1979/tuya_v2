@@ -119,17 +119,35 @@ def inject_css() -> None:
         filter: brightness(2);
     }
 
-    /* Kolumny obok siebie TAKŻE na telefonie (Streamlit domyślnie zawija
-       je do 100% szerokości poniżej ~640px). Wymuszamy brak zawijania
-       i równy podział, żeby metryki trzymały 2 obok siebie. */
-    [data-testid="stHorizontalBlock"] {
+    /* --- Układ responsywny Panelu ---
+       Górny blok (.st-key-panel_top): na szerokich ekranach SCOP + metryki
+       obok siebie (Streamlit domyślnie). Na telefonie przestawiamy go w pion,
+       żeby SCOP był na całą szerokość, a metryki pod spodem. */
+    @media (max-width: 640px) {
+        .st-key-panel_top [data-testid="stHorizontalBlock"] {
+            flex-direction: column !important;
+        }
+        .st-key-panel_top [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+            width: 100% !important;
+        }
+    }
+
+    /* Wewnętrzne pary metryk (moce, energia) mają zostać 2 obok siebie
+       TAKŻE na telefonie — Streamlit sam by je zawinął poniżej ~640px.
+       Wymuszamy nowrap i równy podział na tych zagnieżdżonych blokach. */
+    .st-key-panel_top [data-testid="stHorizontalBlock"]
+        [data-testid="stHorizontalBlock"] {
+        flex-direction: row !important;
         flex-wrap: nowrap !important;
         gap: 0.5rem !important;
     }
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    .st-key-panel_top [data-testid="stHorizontalBlock"]
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
         min-width: 0 !important;
+        width: auto !important;
         flex: 1 1 0 !important;
     }
+
     /* Mniejsza czcionka wartości metryki na wąskich ekranach — by kW/kWh
        nie wychodziły poza kafelek przy 2 kolumnach na telefonie. */
     @media (max-width: 640px) {
