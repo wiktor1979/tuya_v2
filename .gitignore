@@ -8,3 +8,4 @@ data/*.db-*
 /data
 /data
 start_local.bat
+*.old
