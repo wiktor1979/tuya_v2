@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tuya v2 — Specyfikacja UI</title>
+<style>
+  :root { --bg: #1a1a2e; --card: #16213e; --accent: #0f3460; --text: #e0e0e0; --highlight: #e94560; --green: #2ecc71; --orange: #f39c12; --blue: #3498db; --cwu: #E67E22; --co: #2196F3; --idle: #555; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; padding: 2rem; max-width: 1000px; margin: 0 auto; }
+  h1 { color: #fff; font-size: 2rem; margin-bottom: 0.5rem; border-bottom: 3px solid var(--highlight); padding-bottom: 0.5rem; }
+  h2 { color: var(--blue); font-size: 1.5rem; margin: 2.5rem 0 1rem; border-left: 4px solid var(--blue); padding-left: 0.8rem; }
+  h3 { color: var(--orange); font-size: 1.2rem; margin: 1.5rem 0 0.5rem; }
+  h4 { color: var(--text); font-size: 1.05rem; margin: 1rem 0 0.3rem; }
+  p { margin-bottom: 0.8rem; }
+  .subtitle { color: #888; font-size: 0.95rem; margin-bottom: 2rem; }
+  .card { background: var(--card); border-radius: 8px; padding: 1.5rem; margin: 1rem 0; border: 1px solid #2a2a4a; }
+  .card-green { border-left: 4px solid var(--green); }
+  .card-blue { border-left: 4px solid var(--blue); }
+  .card-orange { border-left: 4px solid var(--orange); }
+  .card-red { border-left: 4px solid var(--highlight); }
+  code { background: #0d1117; padding: 2px 6px; border-radius: 4px; font-family: 'Cascadia Code', monospace; font-size: 0.9em; color: #e6db74; }
+  pre { background: #0d1117; padding: 1rem; border-radius: 8px; overflow-x: auto; margin: 0.8rem 0; border: 1px solid #333; }
+  pre code { padding: 0; background: none; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  th { background: var(--accent); color: #fff; padding: 0.7rem; text-align: left; font-size: 0.9rem; }
+  td { padding: 0.6rem 0.7rem; border-bottom: 1px solid #2a2a4a; font-size: 0.9rem; }
+  ul, ol { margin: 0.5rem 0 0.8rem 1.5rem; }
+  li { margin-bottom: 0.3rem; }
+  .success { background: rgba(46,204,113,0.1); padding: 0.8rem 1rem; border-radius: 6px; border-left: 3px solid var(--green); margin: 1rem 0; }
+  .muted { color: #888; }
+  .section-divider { border: none; border-top: 1px solid #2a2a4a; margin: 3rem 0; }
+
+  /* Mockup styles */
+  .mockup { background: #0d1117; border: 2px solid #333; border-radius: 12px; padding: 1rem; margin: 1rem 0; font-family: 'Segoe UI', sans-serif; }
+  .mockup-phone { max-width: 380px; margin: 1rem auto; }
+  .mockup-desktop { width: 100%; }
+  .mockup-header { background: #16213e; padding: 0.5rem 1rem; border-radius: 8px; margin-bottom: 0.8rem; display: flex; justify-content: space-between; align-items: center; }
+  .mockup-header h5 { color: #fff; margin: 0; font-size: 1rem; }
+  .mock-status { display: inline-block; padding: 4px 12px; border-radius: 16px; font-size: 0.8rem; font-weight: 700; }
+  .mock-status-co { background: rgba(33,150,243,0.2); color: var(--co); border: 1px solid var(--co); }
+  .mock-status-cwu { background: rgba(230,126,34,0.2); color: var(--cwu); border: 1px solid var(--cwu); }
+  .mock-status-idle { background: rgba(85,85,85,0.2); color: var(--idle); border: 1px solid var(--idle); }
+  .mock-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin: 0.5rem 0; }
+  .mock-metrics-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .mock-metric { background: #16213e; border-radius: 8px; padding: 0.6rem; text-align: center; }
+  .mock-metric .label { font-size: 0.7rem; color: #888; text-transform: uppercase; }
+  .mock-metric .value { font-size: 1.3rem; font-weight: 700; color: #fff; }
+  .mock-metric .unit { font-size: 0.8rem; color: #aaa; }
+  .mock-metric .delta { font-size: 0.7rem; margin-top: 2px; }
+  .mock-metric .delta-good { color: var(--green); }
+  .mock-metric .delta-bad { color: var(--highlight); }
+  .mock-metric-wide { grid-column: span 2; }
+  .mock-meter-btn { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 0.6rem; text-align: center; cursor: pointer; font-size: 0.85rem; width: 100%; margin-top: 0.5rem; }
+  .mock-tabs { display: flex; gap: 0; margin: 0.8rem 0 0.5rem; border-bottom: 2px solid #2a2a4a; }
+  .mock-tab { padding: 0.5rem 1rem; font-size: 0.85rem; color: #888; border-bottom: 2px solid transparent; margin-bottom: -2px; cursor: pointer; }
+  .mock-tab-active { color: var(--blue); border-bottom-color: var(--blue); }
+  .mock-chart { background: #111; border-radius: 8px; height: 120px; display: flex; align-items: center; justify-content: center; color: #444; font-size: 0.8rem; margin: 0.5rem 0; }
+  .mock-chart-tall { height: 200px; }
+  .mock-temp-bar { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; }
+  .mock-temp-bar .bar-label { font-size: 0.8rem; color: #aaa; width: 100px; }
+  .mock-temp-bar .bar { height: 24px; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; font-size: 0.75rem; color: #fff; font-weight: 600; }
+  .mock-temp-bar .bar-co { background: linear-gradient(90deg, var(--co), #1565c0); }
+  .mock-temp-bar .bar-cwu { background: linear-gradient(90deg, var(--cwu), #e65100); }
+  .mock-scop-box { background: #16213e; border-radius: 8px; padding: 0.8rem; margin: 0.5rem 0; }
+  .mock-scop-row { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.9rem; }
+  .mock-scop-label { color: #aaa; }
+  .mock-scop-value { font-weight: 700; }
+  .mock-nav { display: flex; gap: 0.3rem; margin-bottom: 0.5rem; }
+  .mock-nav-item { background: #16213e; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.75rem; color: #aaa; cursor: pointer; }
+  .mock-nav-active { background: var(--accent); color: #fff; }
+</style>
+</head>
+<body>
+
+<h1>📱 Tuya v2 — Specyfikacja UI</h1>
+<p class="subtitle">Data: 2026-08-31 &nbsp;|&nbsp; Na podstawie rozmowy o priorytetach użytkownika</p>
+
+<!-- ============================================================ -->
+<h2>1. Zasady ogólne</h2>
+
+<div class="card card-green">
+  <h3>Źródło danych</h3>
+  <ul>
+    <li>Wszystkie metryki energetyczne (SCOP, E_el, E_th, kWh/HDD) z <code>compute_energy()</code></li>
+    <li>Resample <strong>tylko</strong> do wykresów (wygładzanie wizualne)</li>
+    <li>Dane na żywo (temperatury, COP chwilowy, status pompy) z tabeli <code>telemetry</code> bezpośrednio</li>
+  </ul>
+
+  <h3>Responsywność</h3>
+  <ul>
+    <li><strong>Mobile-first</strong> — telefon to główny widok na co dzień</li>
+    <li>Wykresy tylko na desktopie (na telefonie za małe żeby cokolwiek odczytać)</li>
+    <li>Metryki i statusy na obu — duże, czytelne, z kolorami</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>2. Struktura stron</h2>
+
+<table>
+  <tr><th>Strona</th><th>Treść</th><th>Mobile</th><th>Desktop</th></tr>
+  <tr>
+    <td><strong>🏠 Panel Główny</strong></td>
+    <td>Status pompy, COP/SCOP, temperatury, odczyt licznika</td>
+    <td>✅ Główny widok</td>
+    <td>✅ + wykres parametrów</td>
+  </tr>
+  <tr>
+    <td><strong>⚡ Bilans i SCOP</strong></td>
+    <td>SCOP CO/CWU/Total, energia, tabela dzienna, koszty</td>
+    <td>✅ Metryki</td>
+    <td>✅ + wykres SCOP dziennego</td>
+  </tr>
+  <tr>
+    <td><strong>🔬 Analiza i Diagnostyka</strong></td>
+    <td>Sprężarka, defrost, ΔT, krzywa grzewcza, awarie</td>
+    <td>⚠️ Ograniczony</td>
+    <td>✅ Pełny z wykresami</td>
+  </tr>
+  <tr>
+    <td><strong>📅 Porównanie Okresów</strong></td>
+    <td>HDD, kWh/HDD, SCOP miesięczny, trend</td>
+    <td>⚠️ Tabela</td>
+    <td>✅ Pełny z wykresami</td>
+  </tr>
+</table>
+
+<p class="muted">Usunięte strony: Kontekst Pogodowy (opcjonalnie jako sekcja w Analizie zimą),
+Eksport CSV (przeniesiony do sidebara jako przycisk).
+Baza Wiedzy przeniesiona do sidebara (sekcja About / Help).</p>
+
+<!-- ============================================================ -->
+<h2>3. Panel Główny — mockup Mobile</h2>
+
+<p>Najczęściej otwierany widok. Na telefonie musi odpowiedzieć na pytanie: <strong>"Czy pompa działa OK?"</strong> w 2 sekundy.</p>
+
+<div class="mockup mockup-phone">
+
+  <!-- Status bar -->
+  <div class="mockup-header">
+    <h5>🔥 Pompa Ciepła</h5>
+    <span class="mock-status mock-status-co">● CO — Grzeje</span>
+  </div>
+
+  <!-- COP / SCOP -->
+  <div class="mock-metrics">
+    <div class="mock-metric">
+      <div class="label">COP chwilowy</div>
+      <div class="value">4.12</div>
+      <div class="delta delta-good">▲ Tryb: CO</div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">SCOP dzienny</div>
+      <div class="value">3.85</div>
+      <div class="delta delta-good">✓ powyżej 3.1</div>
+    </div>
+  </div>
+
+  <!-- Temperatury -->
+  <div style="margin: 0.8rem 0;">
+    <div class="mock-temp-bar">
+      <span class="bar-label">Zasilanie CO</span>
+      <div class="bar bar-co" style="width: 70%;">38.2 °C</div>
+    </div>
+    <div class="mock-temp-bar">
+      <span class="bar-label">🎯 Nastawa CO</span>
+      <div class="bar bar-co" style="width: 65%; opacity: 0.6;">36.0 °C</div>
+    </div>
+    <div class="mock-temp-bar">
+      <span class="bar-label">Woda CWU</span>
+      <div class="bar bar-cwu" style="width: 85%;">48.5 °C</div>
+    </div>
+    <div class="mock-temp-bar">
+      <span class="bar-label">🎯 Nastawa CWU</span>
+      <div class="bar bar-cwu" style="width: 80%; opacity: 0.6;">46.0 °C</div>
+    </div>
+  </div>
+
+  <!-- SCOP rozbite -->
+  <div class="mock-scop-box">
+    <div style="font-size: 0.8rem; color: #888; margin-bottom: 0.3rem;">SCOP dzisiejszy</div>
+    <div class="mock-scop-row">
+      <span class="mock-scop-label">🏠 CO</span>
+      <span class="mock-scop-value" style="color: var(--co);">4.02</span>
+    </div>
+    <div class="mock-scop-row">
+      <span class="mock-scop-label">🚿 CWU</span>
+      <span class="mock-scop-value" style="color: var(--cwu);">2.95</span>
+    </div>
+    <div class="mock-scop-row" style="border-top: 1px solid #333; padding-top: 0.4rem; margin-top: 0.2rem;">
+      <span class="mock-scop-label"><strong>Σ Total</strong></span>
+      <span class="mock-scop-value" style="color: #fff;">3.85</span>
+    </div>
+  </div>
+
+  <!-- Szybki wpis licznika -->
+  <button class="mock-meter-btn">⚡ Wpisz stan licznika</button>
+
+  <!-- Mini energia -->
+  <div class="mock-metrics" style="margin-top: 0.8rem;">
+    <div class="mock-metric">
+      <div class="label">Energia dziś</div>
+      <div class="value" style="font-size: 1.1rem;">6.2 <span class="unit">kWh</span></div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">Ciepło dziś</div>
+      <div class="value" style="font-size: 1.1rem;">23.8 <span class="unit">kWh</span></div>
+    </div>
+  </div>
+
+</div>
+
+<h4>Status pompy — kolor i ikona</h4>
+<table>
+  <tr><th>Stan</th><th>Kolor</th><th>Tekst</th></tr>
+  <tr><td>CO — grzeje</td><td style="color: var(--co);">🔥 Niebieski</td><td><code>● CO — Grzeje</code></td></tr>
+  <tr><td>CWU — podgrzewa wodę</td><td style="color: var(--cwu);">🚿 Pomarańczowy</td><td><code>● CWU — Podgrzewa wodę</code></td></tr>
+  <tr><td>Postój</td><td style="color: var(--idle);">⏸ Szary</td><td><code>○ Postój</code></td></tr>
+  <tr><td>Defrost</td><td style="color: #00BCD4;">❄️ Cyan</td><td><code>● Defrost — Odszranianie</code></td></tr>
+  <tr><td>Awaria</td><td style="color: var(--highlight);">🚨 Czerwony</td><td><code>⚠ AWARIA — E03</code></td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>4. Panel Główny — mockup Desktop</h2>
+
+<p>Na desktopie: to samo co mobile + wykres parametrów na dole.</p>
+
+<div class="mockup mockup-desktop">
+  <div class="mockup-header">
+    <h5>🔥 Pompa Ciepła</h5>
+    <span class="mock-status mock-status-co">● CO — Grzeje</span>
+  </div>
+
+  <!-- Metryki w rzędzie -->
+  <div class="mock-metrics mock-metrics-3">
+    <div class="mock-metric">
+      <div class="label">COP chwilowy</div>
+      <div class="value">4.12</div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">SCOP dzienny</div>
+      <div class="value">3.85</div>
+      <div class="delta delta-good">✓ > 3.1</div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">Energia dziś</div>
+      <div class="value" style="font-size: 1.1rem;">6.2 <span class="unit">kWh</span></div>
+    </div>
+  </div>
+
+  <!-- Temperatury + SCOP rozbite + Licznik w 3 kolumnach -->
+  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.8rem; margin: 0.8rem 0;">
+    <div>
+      <div style="font-size: 0.8rem; color: #888; margin-bottom: 0.3rem;">Temperatury</div>
+      <div class="mock-temp-bar">
+        <span class="bar-label" style="width:80px;">Zasilanie</span>
+        <div class="bar bar-co" style="width: 70%;">38.2 °C</div>
+      </div>
+      <div class="mock-temp-bar">
+        <span class="bar-label" style="width:80px;">🎯 Nastawa</span>
+        <div class="bar bar-co" style="width: 65%; opacity: 0.5;">36.0 °C</div>
+      </div>
+      <div class="mock-temp-bar">
+        <span class="bar-label" style="width:80px;">CWU</span>
+        <div class="bar bar-cwu" style="width: 85%;">48.5 °C</div>
+      </div>
+      <div class="mock-temp-bar">
+        <span class="bar-label" style="width:80px;">🎯 Nastawa</span>
+        <div class="bar bar-cwu" style="width: 80%; opacity: 0.5;">46.0 °C</div>
+      </div>
+    </div>
+    <div class="mock-scop-box">
+      <div style="font-size: 0.8rem; color: #888; margin-bottom: 0.3rem;">SCOP dzisiejszy</div>
+      <div class="mock-scop-row"><span class="mock-scop-label">🏠 CO</span><span class="mock-scop-value" style="color: var(--co);">4.02</span></div>
+      <div class="mock-scop-row"><span class="mock-scop-label">🚿 CWU</span><span class="mock-scop-value" style="color: var(--cwu);">2.95</span></div>
+      <div class="mock-scop-row" style="border-top: 1px solid #333; padding-top: 0.3rem;"><span class="mock-scop-label"><strong>Σ Total</strong></span><span class="mock-scop-value">3.85</span></div>
+    </div>
+    <div>
+      <div style="font-size: 0.8rem; color: #888; margin-bottom: 0.3rem;">Licznik energii</div>
+      <button class="mock-meter-btn">⚡ Wpisz stan licznika</button>
+      <div style="font-size: 0.75rem; color: #666; margin-top: 0.3rem;">Ostatni odczyt: 12450.5 kWh (dziś 7:15)</div>
+      <div style="font-size: 0.75rem; color: #666;">Kalibracja: hidden=20W, sensor=×1.00</div>
+    </div>
+  </div>
+
+  <!-- Wykres parametrów (tylko desktop) -->
+  <div class="mock-chart mock-chart-tall">[Wykres: Przebieg wybranych parametrów w czasie — Plotly, multiselect kodów, dark theme]</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>5. Bilans i SCOP</h2>
+
+<p>Dostępny przez kliknięcie COP/SCOP na Panelu Głównym lub z nawigacji.</p>
+
+<div class="mockup mockup-desktop">
+  <div class="mock-nav">
+    <span class="mock-nav-item">🏠 Panel</span>
+    <span class="mock-nav-item mock-nav-active">⚡ Bilans i SCOP</span>
+    <span class="mock-nav-item">🔬 Analiza</span>
+    <span class="mock-nav-item">📅 Porównanie</span>
+  </div>
+
+  <!-- SCOP KPI -->
+  <div class="mock-metrics" style="grid-template-columns: 1fr 1fr 1fr 1fr;">
+    <div class="mock-metric">
+      <div class="label">SCOP nominalny</div>
+      <div class="value">3.92</div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">SCOP realny</div>
+      <div class="value">3.85</div>
+      <div class="delta delta-good">✓ > 3.1</div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">SCOP CO</div>
+      <div class="value" style="color: var(--co);">4.02</div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">SCOP CWU</div>
+      <div class="value" style="color: var(--cwu);">2.95</div>
+    </div>
+  </div>
+
+  <!-- Energia -->
+  <div class="mock-metrics mock-metrics-3" style="margin-top: 0.5rem;">
+    <div class="mock-metric">
+      <div class="label">Prąd pobrany</div>
+      <div class="value" style="font-size: 1.1rem;">6.2 <span class="unit">kWh</span></div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">Ciepło oddane</div>
+      <div class="value" style="font-size: 1.1rem;">23.8 <span class="unit">kWh</span></div>
+    </div>
+    <div class="mock-metric">
+      <div class="label">Strata defrostu</div>
+      <div class="value" style="font-size: 1.1rem;">-0.12 <span class="unit">kWh</span></div>
+    </div>
+  </div>
+
+  <!-- Tabela podziału CO/CWU -->
+  <div style="margin: 1rem 0; font-size: 0.85rem;">
+    <table>
+      <tr><th>Tryb</th><th>E_el [kWh]</th><th>E_th [kWh]</th><th>SCOP</th></tr>
+      <tr><td>🏠 CO</td><td>4.1</td><td>16.5</td><td>4.02</td></tr>
+      <tr><td>🚿 CWU</td><td>2.1</td><td>6.2</td><td>2.95</td></tr>
+      <tr><td>❄️ Defrost</td><td>0.05</td><td>-0.12</td><td>—</td></tr>
+      <tr style="font-weight: 700;"><td>Σ Total (realny)</td><td>6.2</td><td>22.6</td><td>3.85</td></tr>
+    </table>
+  </div>
+
+  <!-- SCOP dzienny wykres -->
+  <div class="mock-chart mock-chart-tall">[Wykres: SCOP dzienny słupkowy — zielony/czerwony vs próg 3.1, linia SCOP nominalny]</div>
+
+  <!-- Tabela dzienna -->
+  <div style="margin: 0.5rem 0; font-size: 0.8rem; color: #888;">
+    [Tabela dzienna z daily_breakdown: data | E_el CO | E_el CWU | E_th | SCOP nom. | SCOP real. | HDD | defrosty | starty]
+  </div>
+</div>
+
+<h4>Co usunięte vs v1</h4>
+<ul>
+  <li>❌ Wykres "Porównanie energii pobranej do oddanej" (bar chart CO vs CWU) — zastąpiony tabelą</li>
+  <li>❌ Statystyki średniodobowe — przeniesione do tabeli dziennej</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2>6. Analiza i Diagnostyka (połączone)</h2>
+
+<p>Jedna strona z zakładkami. Połączenie dotychczasowej "Analizy Parametrów" i "Diagnostyki".</p>
+
+<div class="mockup mockup-desktop">
+  <div class="mock-tabs">
+    <span class="mock-tab mock-tab-active">💧 Hydraulika ΔT</span>
+    <span class="mock-tab">⚙️ Sprężarka</span>
+    <span class="mock-tab">❄️ Defrost</span>
+    <span class="mock-tab">📈 Krzywa Grzewcza</span>
+    <span class="mock-tab">🚨 Awarie</span>
+  </div>
+
+  <div class="mock-chart mock-chart-tall">[Wykresy per zakładka — jak w v1, ale z plotly_dark i tytułami osi]</div>
+</div>
+
+<h4>Zmiany vs v1</h4>
+<ul>
+  <li>✅ Zakładka "🔋 Wydajność COP" <strong>usunięta</strong> — COP/SCOP jest na Panelu Głównym i Bilansie</li>
+  <li>✅ Zakładka "🚨 Awarie" dodana (z v1 Diagnostyka → Historia Awarii)</li>
+  <li>✅ Diagnostyka sprężarki (taktowanie, histogram cykli) wchłonięta do zakładki "⚙️ Sprężarka"</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2>7. Porównanie Okresów</h2>
+
+<p>Bez zmian koncepcyjnych vs v1. Dane z <code>compute_energy(daily_breakdown=True)</code> agregowane miesięcznie.</p>
+
+<div class="card card-blue">
+  <ul>
+    <li>Tabela miesięczna: HDD, E_el CO/CWU, SCOP CO/CWU, kWh/HDD, koszt</li>
+    <li>Wykresy: trend kWh/HDD, SCOP miesięczny CO vs CWU, HDD vs E_el</li>
+    <li>Sezon grzewczy: 1 września – 30 kwietnia</li>
+    <li>Źródło: <code>compute_energy(date_from="2026-09-01", date_to="2027-04-30", daily_breakdown=True)</code></li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>8. Sidebar</h2>
+
+<div class="card card-orange">
+  <h3>Zawartość sidebara</h3>
+  <ul>
+    <li><strong>Zakres czasu:</strong> Dzisiaj / 3 dni / 7 dni / 30 dni / 90 dni / Sezon grzewczy</li>
+    <li><strong>Kalibracja (expander):</strong> cos_φ, standby_power, active_power, hidden_power_w (z kalibracji licznika), sensor_factor — persystowane w settings<br>
+      <span class="muted">hidden_power_w kalibrowany automatycznie z odczytów licznika</span></li>
+    <li><strong>Eksport CSV</strong> — przycisk (zamiast osobnej strony)</li>
+    <li><strong>About / Help (expander):</strong> Baza Wiedzy + wersja aplikacji</li>
+    <li><strong>Status połączenia:</strong> ostatnia próbka X min temu</li>
+    <li><strong>Ikona trybu pracy</strong> (jak w v1)</li>
+  </ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>9. Nawigacja między stronami</h2>
+
+<div class="card card-green">
+  <h3>Kliknięcie w metrykę → przenosi na szczegóły</h3>
+  <ul>
+    <li>Kliknięcie <strong>COP / SCOP</strong> na Panelu → otwiera <strong>Bilans i SCOP</strong></li>
+    <li>Kliknięcie <strong>ΔT / Przepływ</strong> na Panelu → otwiera <strong>Analiza → Hydraulika</strong></li>
+    <li>Kliknięcie <strong>Alert awarii</strong> → otwiera <strong>Analiza → Awarie</strong></li>
+  </ul>
+  <p class="muted">Implementacja: <code>st.page_link()</code> lub <code>st.switch_page()</code> (Streamlit multipage)</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>10. Mapowanie danych → UI</h2>
+
+<table>
+  <tr><th>Element UI</th><th>Źródło danych</th><th>Odświeżanie</th></tr>
+  <tr>
+    <td>Status pompy (CO/CWU/Postój)</td>
+    <td>Ostatni <code>comp_freq</code> + <code>valve</code> z telemetry</td>
+    <td>Auto 60s (pompa ON) / 300s (OFF)</td>
+  </tr>
+  <tr>
+    <td>COP chwilowy</td>
+    <td>Ostatnie <code>P_th / P_el</code> z telemetry</td>
+    <td>Auto 60s</td>
+  </tr>
+  <tr>
+    <td>SCOP dzienny (CO/CWU/Total)</td>
+    <td><code>compute_energy(date_from="today")</code></td>
+    <td>Cache 60s</td>
+  </tr>
+  <tr>
+    <td>Temperatury (zasilanie, nastawa, CWU)</td>
+    <td>Ostatni wiersz z telemetry per kod</td>
+    <td>Auto 60s</td>
+  </tr>
+  <tr>
+    <td>Bilans E_el / E_th / SCOP rozbity</td>
+    <td><code>compute_energy(date_from, date_to)</code></td>
+    <td>Cache 60s</td>
+  </tr>
+  <tr>
+    <td>Tabela dzienna</td>
+    <td><code>compute_energy(daily_breakdown=True)</code></td>
+    <td>Cache 60s</td>
+  </tr>
+  <tr>
+    <td>Wykresy parametrów</td>
+    <td>Surowe dane z telemetry → <code>resample()</code></td>
+    <td>Cache 60s</td>
+  </tr>
+  <tr>
+    <td>Kalibracja licznika</td>
+    <td><code>core/calibration.py</code> → <code>hidden_power_w</code> + <code>sensor_factor</code><br>
+      <span class="muted">Model addytywny: hidden_power_w [W] dodaje stałą moc ukrytą (nie mnożnik), sensor_factor skaluje odczyt czujnika</span></td>
+    <td>Po wpisie licznika</td>
+  </tr>
+</table>
+
+<!-- ============================================================ -->
+<h2>11. Czego NIE robimy w UI v2</h2>
+
+<div class="card card-red">
+  <ul>
+    <li>❌ Strona "Kontekst Pogodowy" — opcjonalnie jako sekcja w Analizie zimą</li>
+    <li>❌ Strona "Eksport CSV" — przycisk w sidebarze</li>
+    <li>❌ Wykres "Porównanie energii pobranej vs oddanej" — zastąpiony tabelą</li>
+    <li>❌ Zakładka "Wydajność COP" w Analizie — przeniesiona na Panel i Bilans</li>
+    <li>❌ Tryb ciemny/jasny — Streamlit domyślnie ciemny, Plotly dark theme</li>
+  </ul>
+</div>
+
+<hr class="section-divider">
+<p style="color:#666; font-size:0.85rem; text-align:center; margin-top:2rem;">
+  Wygenerowano: 2026-08-31 &nbsp;|&nbsp; Tuya v2 UI Specification &nbsp;|&nbsp; Wersja do przeglądu
+</p>
+
+</body>
+</html>

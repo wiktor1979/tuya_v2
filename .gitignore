@@ -1,3 +1,7 @@
-data/tuya_telemetry.db.old
-/data
-/data
+__pycache__/
+*.pyc
+.pytest_cache/
+data/*.db
+data/*.db-*
+.env
+*.egg-info/
