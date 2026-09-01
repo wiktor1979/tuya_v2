@@ -118,6 +118,27 @@ def inject_css() -> None:
     [data-testid="stMetric"] [data-testid="stTooltipHoverTarget"] {
         filter: brightness(2);
     }
+
+    /* Kolumny obok siebie TAKŻE na telefonie (Streamlit domyślnie zawija
+       je do 100% szerokości poniżej ~640px). Wymuszamy brak zawijania
+       i równy podział, żeby metryki trzymały 2 obok siebie. */
+    [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        gap: 0.5rem !important;
+    }
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        min-width: 0 !important;
+        flex: 1 1 0 !important;
+    }
+    /* Mniejsza czcionka wartości metryki na wąskich ekranach — by kW/kWh
+       nie wychodziły poza kafelek przy 2 kolumnach na telefonie. */
+    @media (max-width: 640px) {
+        [data-testid="stMetric"] [data-testid="stMetricValue"],
+        [data-testid="stMetric"] [data-testid="stMetricValue"] div {
+            font-size: 1.25rem !important;
+        }
+        [data-testid="stMetric"] { padding: 0.4rem !important; }
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -218,9 +239,13 @@ def render_temp_bar_setpoint(
     )
 
 
-def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: str = "SCOP") -> None:
+def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: str = "SCOP",
+                    running: bool = False) -> None:
     """Renderuje box SCOP: Total duży na górze z oznaczeniem opłacalności (próg 3.1),
-    pod spodem rozbicie CO / CWU."""
+    pod spodem rozbicie CO / CWU.
+
+    running=True → zielona obramówka boxu (pompa aktualnie pracuje).
+    """
     co_color = STATUS_COLORS["co"]
     cwu_color = STATUS_COLORS["cwu"]
 
@@ -228,6 +253,9 @@ def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: s
         return f"{v:.2f}" if v > 0 else "—"
 
     no_data = scop_co <= 0 and scop_cwu <= 0 and scop_total <= 0
+
+    # Zielona obramówka gdy pompa pracuje
+    box_border = "border:2px solid #2ECC71;box-shadow:0 0 8px rgba(46,204,113,0.4);" if running else "border:2px solid transparent;"
 
     # Kolor i status Total wg progu opłacalności 3.1
     if scop_total <= 0:
@@ -243,7 +271,7 @@ def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: s
     hint = '<div style="font-size:0.75rem;color:#666;margin-top:0.4rem;text-align:center;">Pompa nie pracowała w wybranym zakresie</div>' if no_data else ""
 
     st.markdown(f"""
-    <div class="scop-box">
+    <div class="scop-box" style="{box_border}">
         <div style="font-size: 0.8rem; color: #aaa; text-align:center;">{label}</div>
         <div style="text-align:center;line-height:1.1;margin:0.2rem 0 0.1rem 0;">
             <span style="font-size:2.2rem;font-weight:800;color:{total_color};">{fmt(scop_total)}</span>

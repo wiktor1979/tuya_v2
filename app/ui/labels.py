@@ -13,6 +13,20 @@ METRICS: dict[str, dict[str, str]] = {
             "Zmienia się co sekundę. '—' gdy pompa stoi."
         ),
     },
+    "p_el_instant": {
+        "label": "⚡ Pobór prądu",
+        "help": (
+            "Chwilowy pobór mocy elektrycznej pompy.\n\n"
+            "U·I·cosφ (mierzy sprężarkę). '—' gdy pompa stoi."
+        ),
+    },
+    "p_th_instant": {
+        "label": "🔥 Moc pompy",
+        "help": (
+            "Chwilowa moc cieplna oddawana do instalacji.\n\n"
+            "przepływ · 4.186 · ΔT (zasilanie − powrót). '—' gdy pompa stoi."
+        ),
+    },
     "scop_range": {
         "label": "SCOP {range}",
         "help": (

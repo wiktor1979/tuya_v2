@@ -69,13 +69,10 @@ cal_params = dict(
 )
 
 
-# --- Przycisk odśwież + adaptacyjny interwał auto-refresh (jak v1) ---
+# --- Adaptacyjny interwał auto-refresh (jak v1) ---
 _status_probe = load_latest_status()
 _pump_running = get_pump_status(_status_probe)[0] not in ("Postój", "AWARIA")
 _refresh_sec = 60 if _pump_running else 300
-
-if st.button("🔄 Odśwież dane"):
-    st.rerun()
 
 
 @st.fragment(run_every=_refresh_sec)
@@ -87,13 +84,10 @@ def render_live():
     """
     # --- Dane na żywo ---
     status = load_latest_status()
-    pump_label, pump_color, pump_emoji = get_pump_status(status)
 
-    # Status odświeżania z timestampem
-    running = pump_label not in ("Postój", "AWARIA")
-    icon = "🟢" if running else "⚪"
-    txt = "Pompa pracuje — odświeżanie co 1 min" if running else "Pompa stoi — odświeżanie co 5 min"
-    st.caption(f"{icon} {txt} · Odświeżono: {datetime.now().strftime('%H:%M:%S')}")
+    # Czy pompa pracuje — po częstotliwości sprężarki (spójnie z silnikiem: comp_freq > 5)
+    comp_freq_now = status.get("comp_freq", {}).get("val_num", 0) or 0
+    running = comp_freq_now > 5
 
     # --- Obliczenie energii ---
     # Wołamy compute_energy() BEZPOŚREDNIO (nie cached_energy) — @st.cache_data
@@ -106,15 +100,37 @@ def render_live():
     scop_co = scop_from_result(energy, scope="co", kind="real")
     scop_cwu = scop_from_result(energy, scope="cwu", kind="real")
 
-    # --- Header: tytuł + badge statusu w jednej linii ---
+    # --- Header jako PRZYCISK odświeżania; tło sygnalizuje stan pompy ---
+    # Pracuje → ciepłe pomarańczowo-czerwone tło (ogień), postój → szare.
+    if running:
+        hdr_bg = "linear-gradient(90deg,#E67E22,#e94560)"
+        hdr_fg = "#fff"
+    else:
+        hdr_bg = "#3a3f4b"
+        hdr_fg = "#bbb"
     st.markdown(
-        f'<div style="display:flex;align-items:center;gap:1rem;margin-top:0.5rem;margin-bottom:0.5rem;">'
-        f'<h3 style="margin:0;padding:0;">🔥 Pompa Ciepła</h3>'
-        f'<span class="pump-status" style="background:{pump_color}22;color:{pump_color};'
-        f'border:2px solid {pump_color};padding:0.4rem 1rem;">{pump_emoji} {pump_label}</span>'
-        f'</div>',
+        f"""<style>
+        .st-key-pump_header button {{
+            background: {hdr_bg} !important;
+            color: {hdr_fg} !important;
+            border: none !important;
+            font-size: 1.05rem !important;
+            font-weight: 700 !important;
+            padding: 0.5rem 1rem !important;
+            width: 100% !important;
+            line-height: 1.3 !important;
+            transition: background 0.3s ease;
+        }}
+        </style>""",
         unsafe_allow_html=True,
     )
+    with st.container(key="pump_header"):
+        refresh_txt = "odświeżanie co 1 min" if running else "odświeżanie co 5 min"
+        now_txt = datetime.now().strftime("%H:%M:%S")
+        if st.button(f"🔥 Pompa Ciepła  ·  {refresh_txt}  ·  {now_txt}",
+                     key="pump_header_btn",
+                     help="Kliknij, aby odświeżyć teraz"):
+            st.rerun()
 
     # --- COP chwilowy (do metryki) ---
     cop_val = status.get("comp_freq", {}).get("val_num", 0) or 0
@@ -126,21 +142,40 @@ def render_live():
     p_th_raw = flow * 4.186 * (t_out - t_in) / 3.6 * 1000
     cop_instant = p_th_raw / p_el_raw if p_el_raw > 100 and p_th_raw > 0 else 0
 
-    # --- Górny rząd: lewo = SCOP box, prawo = 3 metryki (COP/Energia/Ciepło) ---
-    col_scop, col_metrics = st.columns([2, 3])
-    with col_scop:
-        render_scop_box(
-            scop_co=scop_co if energy.e_th_co >= 1.0 else 0,
-            scop_cwu=scop_cwu if energy.e_th_cwu >= 1.0 else 0,
-            scop_total=scop_total,
-            label=f"SCOP {selected_range}",
-        )
-    with col_metrics:
-        cop_display = f"{cop_instant:.2f}" if cop_instant > 0.5 else "—"
-        st.metric(METRICS["cop_instant"]["label"], cop_display,
-                  help=METRICS["cop_instant"]["help"])
+    # --- Układ (mobile-first): SCOP pełna szerokość, COP pełna szerokość,
+    #     poniżej 4 metryki w 2 kolumnach (moce chwilowe / energia okresowa). ---
+    render_scop_box(
+        scop_co=scop_co if energy.e_th_co >= 1.0 else 0,
+        scop_cwu=scop_cwu if energy.e_th_cwu >= 1.0 else 0,
+        scop_total=scop_total,
+        label=f"SCOP {selected_range}",
+        running=running,
+    )
+
+    # COP chwilowy — pełna szerokość
+    cop_display = f"{cop_instant:.2f}" if cop_instant > 0.5 else "—"
+    st.metric(METRICS["cop_instant"]["label"], cop_display,
+              help=METRICS["cop_instant"]["help"])
+
+    # Chwilowe moce (kW) — pobór prądu i moc cieplna pompy, obok siebie
+    p_el_kw = p_el_raw / 1000
+    p_th_kw = p_th_raw / 1000
+    p_el_display = f"{p_el_kw:.2f} kW" if p_el_raw > 100 else "—"
+    p_th_display = f"{p_th_kw:.2f} kW" if (p_el_raw > 100 and p_th_raw > 0) else "—"
+    col_pel, col_pth = st.columns(2)
+    with col_pel:
+        st.metric(METRICS["p_el_instant"]["label"], p_el_display,
+                  help=METRICS["p_el_instant"]["help"])
+    with col_pth:
+        st.metric(METRICS["p_th_instant"]["label"], p_th_display,
+                  help=METRICS["p_th_instant"]["help"])
+
+    # Energia / Ciepło okresowe — obok siebie (2 kolumny, oszczędność miejsca na telefonie)
+    col_eel, col_eth = st.columns(2)
+    with col_eel:
         st.metric(METRICS["e_el_short"]["label"], f"{energy.e_el_total:.1f} kWh",
                   help=METRICS["e_el_short"]["help"])
+    with col_eth:
         st.metric(METRICS["e_th_short"]["label"], f"{energy.e_th_total:.1f} kWh",
                   help=METRICS["e_th_short"]["help"])
 

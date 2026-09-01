@@ -1,3 +1,13 @@
+# !!! ZASADY WSPÓŁPRACY (obowiązują zawsze, także po kompaktowaniu kontekstu)
+
+1. DEPLOY: każdy `fly deploy` wymaga JASNEJ, WYRAZNEJ zgody użytkownika ZA KAŻDYM RAZEM.
+   Poprawki/redeploye po nieudanym deployu NIE są kontynuacją poprzedniej zgody. Bez "tak, deployuj" — nie deployować.
+2. WYBÓR OPCJI: gdy przedstawiam warianty (A/B/...), ZATRZYMUJĘ SIĘ i czekam na decyzję użytkownika.
+   NIE implementuję żadnej opcji z automatu, nawet jeśli którąś rekomenduję. Najpierw wybór użytkownika, potem implementacja.
+
+---
+
+
 # Tuya Heat Pump Monitor v2 — Decyzje i Ustalenia
 
 ## Lokalizacje projektów
