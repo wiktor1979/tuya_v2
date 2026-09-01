@@ -1,7 +1,3 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-data/*.db
-data/*.db-*
-.env
-*.egg-info/
+data/tuya_telemetry.db.old
+/data
+/data
