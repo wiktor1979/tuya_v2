@@ -74,41 +74,42 @@ scop_co = scop_from_result(energy, scope="co", kind="real")
 scop_cwu = scop_from_result(energy, scope="cwu", kind="real")
 
 # === KPI: 4 SCOP ===
-c1, c2, c3, c4 = st.columns(4)
-with c1:
-    st.metric(METRICS["scop_nominal"]["label"],
-              f"{energy.scop_nominal:.2f}" if energy.scop_nominal > 0 else "—",
-              help=METRICS["scop_nominal"]["help"])
-with c2:
-    delta, delta_color = scop_delta(scop_total)
-    st.metric(METRICS["scop_real"]["label"],
-              f"{scop_total:.2f}" if scop_total > 0 else "—",
-              delta=delta, delta_color=delta_color,
-              help=METRICS["scop_real"]["help"])
-with c3:
-    if energy.e_th_co >= 1.0:
-        st.metric(METRICS["scop_co"]["label"], f"{scop_co:.2f}",
-                  help=METRICS["scop_co"]["help"])
-    else:
-        st.metric(METRICS["scop_co_empty"]["label"], "—",
-                  help=METRICS["scop_co_empty"]["help"])
-with c4:
-    if energy.e_th_cwu >= 1.0:
-        st.metric(METRICS["scop_cwu"]["label"], f"{scop_cwu:.2f}",
-                  help=METRICS["scop_cwu"]["help"])
-    else:
-        st.metric(METRICS["scop_cwu_empty"]["label"], "—",
-                  help=METRICS["scop_cwu_empty"]["help"])
+with st.container(key="bilans_kpi"):
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric(METRICS["scop_nominal"]["label"],
+                  f"{energy.scop_nominal:.2f}" if energy.scop_nominal > 0 else "—",
+                  help=METRICS["scop_nominal"]["help"])
+    with c2:
+        delta, delta_color = scop_delta(scop_total)
+        st.metric(METRICS["scop_real"]["label"],
+                  f"{scop_total:.2f}" if scop_total > 0 else "—",
+                  delta=delta, delta_color=delta_color,
+                  help=METRICS["scop_real"]["help"])
+    with c3:
+        if energy.e_th_co >= 1.0:
+            st.metric(METRICS["scop_co"]["label"], f"{scop_co:.2f}",
+                      help=METRICS["scop_co"]["help"])
+        else:
+            st.metric(METRICS["scop_co_empty"]["label"], "—",
+                      help=METRICS["scop_co_empty"]["help"])
+    with c4:
+        if energy.e_th_cwu >= 1.0:
+            st.metric(METRICS["scop_cwu"]["label"], f"{scop_cwu:.2f}",
+                      help=METRICS["scop_cwu"]["help"])
+        else:
+            st.metric(METRICS["scop_cwu_empty"]["label"], "—",
+                      help=METRICS["scop_cwu_empty"]["help"])
 
-# === Energia: 3 metryki ===
-e1, e2, e3 = st.columns(3)
-e1.metric(METRICS["e_el"]["label"], f"{energy.e_el_total:.2f} kWh",
-          help=e_el_help_with_standby(energy.e_el_standby, energy.e_el_total))
-e2.metric(METRICS["e_th"]["label"], f"{energy.e_th_total:.2f} kWh",
-          help=METRICS["e_th"]["help"])
-e3.metric(METRICS["e_th_defrost"]["label"],
-          f"{energy.e_th_defrost:.3f} kWh" if energy.e_th_defrost < 0 else "0 kWh",
-          help=METRICS["e_th_defrost"]["help"])
+    # === Energia: 3 metryki ===
+    e1, e2, e3 = st.columns(3)
+    e1.metric(METRICS["e_el"]["label"], f"{energy.e_el_total:.2f} kWh",
+              help=e_el_help_with_standby(energy.e_el_standby, energy.e_el_total))
+    e2.metric(METRICS["e_th"]["label"], f"{energy.e_th_total:.2f} kWh",
+              help=METRICS["e_th"]["help"])
+    e3.metric(METRICS["e_th_defrost"]["label"],
+              f"{energy.e_th_defrost:.3f} kWh" if energy.e_th_defrost < 0 else "0 kWh",
+              help=METRICS["e_th_defrost"]["help"])
 
 # === Tabela podziału CO/CWU/Defrost/Total ===
 st.markdown("---")
@@ -128,16 +129,17 @@ table_df = pd.DataFrame(rows, columns=["Tryb", "E_el [kWh]", "E_th [kWh]", "SCOP
 st.table(table_df)
 
 # === Statystyki ===
-s1, s2, s3, s4 = st.columns(4)
-s1.metric(METRICS["comp_starts"]["label"], f"{energy.comp_starts}",
-          help=METRICS["comp_starts"]["help"])
-s2.metric(METRICS["comp_hours"]["label"], f"{energy.comp_hours:.1f} h",
-          help=METRICS["comp_hours"]["help"])
-s3.metric(METRICS["defrost_count"]["label"], f"{energy.defrost_count}",
-          help=METRICS["defrost_count"]["help"])
-s4.metric(METRICS["amb_temp_avg"]["label"],
-          f"{energy.amb_temp_avg:.1f} °C" if energy.amb_temp_avg != 0 else "—",
-          help=METRICS["amb_temp_avg"]["help"])
+with st.container(key="bilans_stats"):
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric(METRICS["comp_starts"]["label"], f"{energy.comp_starts}",
+              help=METRICS["comp_starts"]["help"])
+    s2.metric(METRICS["comp_hours"]["label"], f"{energy.comp_hours:.1f} h",
+              help=METRICS["comp_hours"]["help"])
+    s3.metric(METRICS["defrost_count"]["label"], f"{energy.defrost_count}",
+              help=METRICS["defrost_count"]["help"])
+    s4.metric(METRICS["amb_temp_avg"]["label"],
+              f"{energy.amb_temp_avg:.1f} °C" if energy.amb_temp_avg != 0 else "—",
+              help=METRICS["amb_temp_avg"]["help"])
 
 # === Wykres COP chwilowego w czasie ===
 st.markdown("---")

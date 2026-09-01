@@ -157,6 +157,24 @@ def inject_css() -> None:
         }
         [data-testid="stMetric"] { padding: 0.4rem !important; }
     }
+
+    /* --- Bilans i SCOP: metryki 2 na rząd na telefonie ---
+       st.columns(4)/(3) domyślnie zwijają się do 1 kolumny poniżej ~640px.
+       Tu wymuszamy zawijanie PO 2 (flex-wrap + flex-basis ~50%), więc
+       4 boxy => 2x2, 3 boxy => 2 + 1. Scope: .st-key-bilans_kpi/_stats. */
+    @media (max-width: 640px) {
+        .st-key-bilans_kpi [data-testid="stHorizontalBlock"],
+        .st-key-bilans_stats [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+            gap: 0.5rem !important;
+        }
+        .st-key-bilans_kpi [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+        .st-key-bilans_stats [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+            flex: 0 0 calc(50% - 0.25rem) !important;
+            width: calc(50% - 0.25rem) !important;
+            min-width: 0 !important;
+        }
+    }
     </style>
     """, unsafe_allow_html=True)
 

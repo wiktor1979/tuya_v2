@@ -29,8 +29,7 @@
     zapisywalyby sie do efemerycznego ./data w kontenerze i znikaly przy restarcie)
   - fly.toml healthcheck GET /_stcore/health (endpoint zdrowia Streamlit)
   - Zweryfikowano: caly runtime uzywa DB_FILE/db_file (brak hardkodowanych sciezek poza testami)
-- DO WERYFIKACJI PRZED DEPLOYEM (nierozwiazane, wymaga decyzji):
-  - DAILY_REPORT_HOUR: fly.toml ma "8" (v1 mial 21) — ustalic swiadomie.
+- DAILY_REPORT_HOUR: DECYZJA (uzytkownik) = 8. fly.toml ma "8" — zgodne, bez zmian. (v1 mial 21.)
 - STAN FLY.IO (sprawdzone 2026-09-01, konto wiktorkmieciak@gmail.com):
   - Apka 'scop' JUZ WDROZONA (nie pierwszy deploy, tylko aktualizacja). v1 = 'hpmonitor' (suspended).
   - Wszystkie 5 sekretow ustawione: TUYA_ACCESS_ID/KEY/DEVICE_IDS, TELEGRAM_BOT_TOKEN/CHAT_ID.
@@ -163,7 +162,8 @@
 - Serwisy: app/services/ (analytics.py, notifier.py, database.py, tuya_client.py, exporter.py)
 - Testy: test_physics.py, test_energy.py, test_calibration.py
 - Ostatnia zmiana: ujednolicenie liczenia SCOP przez jedna funkcje + bugfix standby w chunked
-- Nastepny krok: (do ustalenia) — deploy Fly.io / diagnostyka
+- DEPLOY: wykonuje UZYTKOWNIK samodzielnie (poza asystentem). Asystent NIE deployuje.
+- Nastepny krok: (do ustalenia z uzytkownikiem)
 
 ## Powiadomienia Telegram (zweryfikowane 2026-09-01)
 - app/services/notifier.py: send_telegram(), send_fault_alert(), send_fault_resolved(),
@@ -229,6 +229,40 @@
   outliery), cykle CWU informacyjnie bez oceny (CWU nie taktuje). Wykres startow CO/dobe + histogram CO vs CWU.
 - requirements: streamlit 1.44.1 -> 1.61.1 (width="stretch" nie dzialal w 1.44; podniesiono do wersji lokalnej).
   Dockerfile python:3.11 -> 3.12 (zgodnie z pyproject requires-python>=3.12).
+
+## Responsywny uklad metryk — Panel i Bilans (2026-09-01, sesja wieczorna)
+- ZASADA: Streamlit renderuje HTML po stronie serwera i NIE zna szerokosci ekranu przegladarki
+  (brak informacji "telefon vs desktop" w Pythonie). Roznicowanie ukladu robimy CSS-em (media queries),
+  a nie logika Pythona. Wybrano to zamiast komponentu mierzacego szerokosc (dodatkowa zaleznosc + migotanie).
+- MECHANIZM: bloki metryk owijane w st.container(key="...") -> Streamlit generuje wrapper
+  .st-key-<key>. CSS scope'owany do tego klucza celuje w wewnetrzne [data-testid="stHorizontalBlock"]
+  (to jest st.columns) i jego dzieci [data-testid="stColumn"]. Reguly w inject_css() (styles.py).
+- Panel (Panel.py):
+  - Nowe metryki chwilowe: ⚡ Pobor pradu (p_el_kw) i 🔥 Moc pompy (p_th_kw), oba w kW,
+    liczone z p_el_raw/p_th_raw (/1000), "—" gdy pompa stoi (p_el_raw<=100). Etykiety w labels.py:
+    METRICS["p_el_instant"], METRICS["p_th_instant"].
+  - Uklad gornego bloku owiniety w st.container(key="panel_top"): st.columns([2,3]) = SCOP lewo,
+    metryki prawo (COP pelna szer. + 2 pary 2-kolumnowe: moce, energia/cieplo).
+  - CSS responsywny: DESKTOP = SCOP + metryki obok siebie (domyslne Streamlit). TELEFON (max-width:640px)
+    = .st-key-panel_top [stHorizontalBlock] { flex-direction: column } -> SCOP pelna szer., metryki pod spodem.
+    Wewnetrzne pary metryk wymuszone nowrap (row) TAKZE na telefonie -> zostaja 2 obok siebie.
+  - Licznik odswiezania (interwal + godzina) PRZENIESIONY z osobnego st.caption do etykiety przycisku
+    "🔥 Pompa Ciepla · odswiezanie co 1 min · HH:MM:SS" (oszczednosc miejsca u gory). font-size przycisku
+    1.3rem -> 1.05rem + line-height, by dluzszy tekst sie miescil. Emoji stanu 🟢/⚪ usuniete (tlo przycisku
+    juz sygnalizuje prace ogien / postoj szare).
+- Bilans (1_Bilans.py):
+  - Bloki KPI owiniete: st.container(key="bilans_kpi") = 4 SCOP + 3 metryki energii;
+    st.container(key="bilans_stats") = 4 statystyki. (Dwa osobne klucze — Streamlit nie pozwala na 2
+    kontenery z tym samym kluczem.)
+  - CSS TELEFON (max-width:640px): flex-wrap: WRAP + flex-basis calc(50%-0.25rem) -> metryki zawijaja
+    sie PO 2 na rzad (4 boxy => 2x2, 3 boxy => 2+1). Rozni sie od Panelu (tam nowrap = stale 2 obok siebie),
+    bo Bilans ma rzedy po 3 i 4 boxy.
+- WAZNE ograniczenie: CSS oparty na wewnetrznych [data-testid] Streamlita (stHorizontalBlock/stColumn/stMetric).
+  Dziala na 1.61.1; przy wiekszej aktualizacji Streamlita selektory moga wymagac korekty.
+- Breakpoint 640px stosowany jednolicie (Panel + Bilans + zmniejszenie czcionki metryki na waskim ekranie).
+- Env lokalny: Python 3.14.4 (produkcja/Docker = 3.12). Zaobserwowano dump watkow watchdog/streamlit przy
+  disconnect_session (observer.join()) — NIE crash, aplikacja dzialala; user potwierdzil "nic sie nie stalo".
+  Nie zmieniano nic. Ewentualne obejscie na przyszlosc: --server.fileWatcherType none (lokalnie).
 
 
 ## Parametry pompy ciepla — opisy i histereza DeadbandFilter
