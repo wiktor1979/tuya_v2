@@ -13,12 +13,11 @@ from app.ui.helpers import (
     load_latest_status,
     get_pump_status,
     get_temp_value,
+    load_calibration,
 )
 from app.ui.labels import METRICS
 from app.config import (
     PARAM_INFO, get_param_label,
-    DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
-    DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR,
 )
 from app.core.energy import scop_from_result, compute_energy
 
@@ -40,14 +39,7 @@ with st.sidebar:
         "Dzisiaj", "3 dni", "7 dni", "30 dni", "90 dni",
     ], index=0)
 
-    with st.expander("🔧 Kalibracja"):
-        cos_phi = st.number_input("cos φ", value=DEFAULT_COS_PHI, min_value=0.8, max_value=1.0, step=0.01)
-        standby_w = st.number_input("Standby (widoczny) [W]", value=DEFAULT_STANDBY_POWER_W, step=5.0)
-        active_w = st.number_input("Active (widoczny) [W]", value=DEFAULT_ACTIVE_POWER_W, step=5.0)
-        hidden_w = st.number_input("Hidden power [W]", value=DEFAULT_HIDDEN_POWER_W, step=5.0,
-                                   help="Stały pobór niewidoczny w czujniku (~20W). Kalibrowany z licznika.")
-        sensor_f = st.number_input("Sensor factor", value=DEFAULT_SENSOR_FACTOR, step=0.01,
-                                   help="Korekcja proporcjonalna czujnika. 0.98 = telemetria zawyża ~2% vs licznik.")
+    cal_params = load_calibration()
 
     render_about()
 
@@ -62,11 +54,6 @@ if days_back == 0:
 else:
     date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
 date_to = None
-
-cal_params = dict(
-    cos_phi=cos_phi, standby_power_w=standby_w, active_power_w=active_w,
-    hidden_power_w=hidden_w, sensor_factor=sensor_f,
-)
 
 
 # --- Adaptacyjny interwał auto-refresh (jak v1) ---
@@ -135,7 +122,7 @@ def render_live():
     # --- COP chwilowy (do metryki) ---
     cop_val = status.get("comp_freq", {}).get("val_num", 0) or 0
     p_el_raw = ((status.get("ac_vol", {}).get("val_num", 0) or 0)
-                * ((status.get("ac_curr", {}).get("val_num", 0) or 0) / 10) * cos_phi)
+                * ((status.get("ac_curr", {}).get("val_num", 0) or 0) / 10) * cal_params["cos_phi"])
     flow = (status.get("flow_rate", {}).get("val_num", 0) or 0) / 10
     t_out = get_temp_value(status, "out_water_temp") or 0
     t_in = get_temp_value(status, "in_water_temp") or 0

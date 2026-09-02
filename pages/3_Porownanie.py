@@ -6,13 +6,9 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from app.ui.styles import inject_css, render_about
-from app.ui.helpers import cached_energy
+from app.ui.helpers import cached_energy, load_calibration
 from app.ui.labels import METRICS
 from app.core.energy import compute_scop
-from app.config import (
-    DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
-    DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR,
-)
 
 st.set_page_config(page_title="Porównanie Okresów", layout="wide", page_icon="📅")
 inject_css()
@@ -24,17 +20,9 @@ with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
     electricity_price = st.number_input("Cena prądu [zł/kWh]", value=1.10, step=0.05, key="p_el")
 
-    with st.expander("🔧 Kalibracja"):
-        cos_phi = st.number_input("cos φ", value=DEFAULT_COS_PHI, min_value=0.8, max_value=1.0, step=0.01, key="p_cos")
-        standby_w = st.number_input("Standby [W]", value=DEFAULT_STANDBY_POWER_W, step=5.0, key="p_sbw")
-        active_w = st.number_input("Active [W]", value=DEFAULT_ACTIVE_POWER_W, step=5.0, key="p_aw")
-        hidden_w = st.number_input("Hidden power [W]", value=DEFAULT_HIDDEN_POWER_W, step=5.0, key="p_hw")
-        sensor_f = st.number_input("Sensor factor", value=DEFAULT_SENSOR_FACTOR, step=0.01, key="p_sf")
+    cal = load_calibration()
 
     render_about()
-
-cal = dict(cos_phi=cos_phi, standby_power_w=standby_w, active_power_w=active_w,
-           hidden_power_w=hidden_w, sensor_factor=sensor_f)
 
 # --- Dane: all-time z daily_breakdown ---
 energy = cached_energy(daily_breakdown=True, **cal)

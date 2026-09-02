@@ -8,8 +8,6 @@ from datetime import datetime, timedelta, timezone
 from app.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_ENABLED,
     HEAT_PUMP_DEV_ID, DB_FILE,
-    DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
-    DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR,
 )
 from app.services.analytics import decode_fault_bitmap
 
@@ -127,18 +125,19 @@ def build_daily_report(device_id: str) -> Optional[str]:
     Returns:
         Tekst raportu Markdown lub None jeśli brak danych.
     """
-    from app.services.database import db_cursor, get_fault_history, get_setting
+    from app.services.database import db_cursor, get_fault_history, load_calibration
     from app.core.energy import compute_energy
     from app.config import SERVER_TIMEZONE_OFFSET
     import pandas as pd
     import sqlite3
 
-    # Kalibracja — te same wartości co sidebar (persystowane w settings)
-    cos_phi = float(get_setting("cos_phi", str(DEFAULT_COS_PHI)))
-    standby_power_w = float(get_setting("standby_power_w", str(DEFAULT_STANDBY_POWER_W)))
-    active_power_w = float(get_setting("active_power_w", str(DEFAULT_ACTIVE_POWER_W)))
-    hidden_power_w = float(get_setting("hidden_power_w", str(DEFAULT_HIDDEN_POWER_W)))
-    sensor_factor = float(get_setting("sensor_factor", str(DEFAULT_SENSOR_FACTOR)))
+    # Kalibracja — JEDNO źródło prawdy (tabela settings). Te same wartości co dashboard.
+    cal = load_calibration()
+    cos_phi = cal["cos_phi"]
+    standby_power_w = cal["standby_power_w"]
+    active_power_w = cal["active_power_w"]
+    hidden_power_w = cal["hidden_power_w"]
+    sensor_factor = cal["sensor_factor"]
 
     # Czas lokalny = UTC + SERVER_TIMEZONE_OFFSET (offset strefy lokalnej vs UTC, np. +2 dla CEST).
     # Liczymy z UTC, żeby wynik nie zależał od strefy procesu na serwerze.

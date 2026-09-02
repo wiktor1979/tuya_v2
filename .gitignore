@@ -9,3 +9,4 @@ data/*.db-*
 /data
 start_local.bat
 *.old
+data/tuya_telemetry.db.old

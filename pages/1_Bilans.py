@@ -6,13 +6,11 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from app.ui.styles import inject_css, render_scop_box, STATUS_COLORS, render_about
-from app.ui.helpers import cached_energy
+from app.ui.helpers import cached_energy, load_calibration
 from app.ui.analiza_helpers import load_analiza_pivot
 from app.ui.labels import METRICS, scop_delta, e_el_help_with_standby
 from app.config import (
     get_param_label,
-    DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
-    DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR,
 )
 from app.core.energy import scop_from_result
 
@@ -29,12 +27,7 @@ with st.sidebar:
         "Dzisiaj", "3 dni", "7 dni", "30 dni", "90 dni",
     ], index=2)
 
-    with st.expander("🔧 Kalibracja"):
-        cos_phi = st.number_input("cos φ", value=DEFAULT_COS_PHI, min_value=0.8, max_value=1.0, step=0.01, key="b_cos")
-        standby_w = st.number_input("Standby [W]", value=DEFAULT_STANDBY_POWER_W, step=5.0, key="b_sbw")
-        active_w = st.number_input("Active [W]", value=DEFAULT_ACTIVE_POWER_W, step=5.0, key="b_aw")
-        hidden_w = st.number_input("Hidden power [W]", value=DEFAULT_HIDDEN_POWER_W, step=5.0, key="b_hw")
-        sensor_f = st.number_input("Sensor factor", value=DEFAULT_SENSOR_FACTOR, step=0.01, key="b_sf")
+    cal = load_calibration()
 
     render_about()
 
@@ -55,9 +48,6 @@ if days_back == 0:
 else:
     _okres = f"📅 Okres: **{selected_range}** ({date_from} — {now.strftime('%Y-%m-%d')})"
 st.caption(_okres)
-
-cal = dict(cos_phi=cos_phi, standby_power_w=standby_w, active_power_w=active_w,
-           hidden_power_w=hidden_w, sensor_factor=sensor_f)
 
 # --- Obliczenia ---
 # Jedno wywołanie (total) — SCOP CO/CWU/total liczymy przez compute_scop() z tego samego wyniku.
@@ -146,7 +136,7 @@ st.markdown("---")
 st.subheader("📈 COP chwilowy w czasie")
 
 _hours_back = days_back * 24 if days_back > 0 else 24
-cop_pivot = load_analiza_pivot(hours_back=_hours_back, cos_phi=cos_phi)
+cop_pivot = load_analiza_pivot(hours_back=_hours_back, cos_phi=cal["cos_phi"])
 
 if cop_pivot is not None and not cop_pivot.empty and cop_pivot["COP"].notna().any():
     fig_cop = go.Figure()

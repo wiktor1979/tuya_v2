@@ -2,7 +2,22 @@
 import sqlite3
 from typing import Optional, List, Tuple
 from contextlib import contextmanager
-from app.config import DB_FILE, HEAT_PUMP_DEV_ID, MANUAL_METER_DEV_ID, TEMP_CODES
+from app.config import (
+    DB_FILE, HEAT_PUMP_DEV_ID, MANUAL_METER_DEV_ID, TEMP_CODES,
+    DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
+    DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR,
+)
+
+# Parametry kalibracji — JEDNO źródło prawdy dla kluczy i wartości domyślnych.
+# Bieżące wartości trzymane w tabeli `settings`; DEFAULT_* to fallback dla pustej bazy.
+# Używane przez UI (suwaki) i raport Telegram — wszystkie liczą z tych samych danych.
+CALIBRATION_DEFAULTS: dict = {
+    "cos_phi": DEFAULT_COS_PHI,
+    "standby_power_w": DEFAULT_STANDBY_POWER_W,
+    "active_power_w": DEFAULT_ACTIVE_POWER_W,
+    "hidden_power_w": DEFAULT_HIDDEN_POWER_W,
+    "sensor_factor": DEFAULT_SENSOR_FACTOR,
+}
 
 # Globalna pula połączeń (thread-local)
 import threading
@@ -303,6 +318,34 @@ def set_setting(key: str, value: str) -> None:
             'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
             (key, value)
         )
+
+
+def load_calibration() -> dict:
+    """Czyta parametry kalibracji z tabeli `settings` (fallback DEFAULT_*).
+
+    JEDYNE źródło prawdy dla kalibracji w całej aplikacji. Zwraca dict gotowy
+    do przekazania jako **cal do compute_energy()/cached_energy().
+    Używane przez UI (suwaki) i raport Telegram (notifier).
+    """
+    cal: dict = {}
+    for key, default in CALIBRATION_DEFAULTS.items():
+        raw = get_setting(key, None)
+        try:
+            cal[key] = float(raw) if raw is not None else float(default)
+        except (TypeError, ValueError):
+            cal[key] = float(default)
+    return cal
+
+
+def save_calibration(cal: dict) -> None:
+    """Zapisuje parametry kalibracji do tabeli `settings`.
+
+    Zapewnia jedno źródło prawdy — UI (dashboard) i Telegram czytają
+    zawsze tę samą wartość z `settings` przez load_calibration().
+    """
+    for key in CALIBRATION_DEFAULTS:
+        if key in cal:
+            set_setting(key, str(cal[key]))
 
 
 # --- Obsługa awarii (fault_log) ---

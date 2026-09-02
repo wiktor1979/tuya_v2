@@ -12,6 +12,7 @@ from app.config import (
 )
 from app.core.energy import compute_energy
 from app.core.models import EnergyResult
+from app.services.database import load_calibration
 
 
 @st.cache_data(ttl=60)
