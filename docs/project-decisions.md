@@ -103,6 +103,21 @@
   grzewczym: potwierdzić skalę pod obciążeniem (add_ele dziesiątki–setki Wh/okno, bez szumu zaokrągleń)
   i ewentualnie wpiąć add_ele jako źródło całkowitego zużycia.
 
+### Krzywa grzewcza — stan i wymagania (2026-09-04)
+- FUNKCJA: `analyze_heating_curve()` w `analytics.py` — ANALIZUJE krzywą grzewczą
+  na podstawie duty cycle sprężarki w trybie CO, uwzględnia nasłonecznienie
+  (`weather_df` z `direct_radiation`/`diffuse_radiation`).
+- UI: strona Analiza → zakładka Krzywa Grzewcza (2_Analiza.py → tab_heating_curve).
+- WYMAGANIA DALSZEJ PRACY:
+  - Funkcja obecnie ANALIZUJE (pokazuje rekomendacje), ale NIE STOSUJE automatycznie
+    nastaw do pompy — brak write-back do Tuya/API.
+  - Jakość rekomendacji zależy od pokrycia danych (min. 4h CO per przedział
+    temperaturowy). Latem dane są ubogie (pompa głównie w trybie CWU).
+  - Pełna kalibracja krzywej (dobór curve_low/curve_high) będzie możliwa dopiero
+    w sezonie grzewczym, gdy są dostępne dane z CO przy zróżnicowanych temperaturach
+    zewnętrznych.
+  - Brak mechanizmu auto-apply (zmiana nastaw bezpośrednio w pompie).
+
 ---
 
 ## Ustalenia i zmiany — 2026-09-03
