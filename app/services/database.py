@@ -6,6 +6,7 @@ from app.config import (
     DB_FILE, HEAT_PUMP_DEV_ID, MANUAL_METER_DEV_ID, TEMP_CODES,
     DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
     DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR,
+    ENERGY_METER_DEV_ID,
 )
 
 # Parametry kalibracji — JEDNO źródło prawdy dla kluczy i wartości domyślnych.
@@ -211,7 +212,9 @@ def save_properties_to_db(dev_id: str, properties: list, event_time: Optional[in
             if code is None or raw_val is None:
                 continue
 
-            if code == "ac_vol" and not is_running:
+            # Reguła ac_vol dotyczy pompy (napięcie ma sens tylko gdy pracuje).
+            # Dla licznika energii zapisujemy wszystko surowo.
+            if code == "ac_vol" and not is_running and dev_id != ENERGY_METER_DEV_ID:
                 continue
 
             val_num = None
@@ -426,3 +429,67 @@ def get_current_fault_value(device_id: str) -> Optional[float]:
         ''', (device_id,))
         row = cursor.fetchone()
     return row[0] if row else None
+
+
+def get_remote_meter_energy(ts_from: int, ts_to: int) -> Optional[float]:
+    """
+    Zużycie energii z licznika ZDALNEGO Tuya (ENERGY_METER_DEV_ID) w zakresie czasu.
+
+    Źródłem jest add_ele — przyrost energii. Skala potwierdzona (2026-09-04):
+    1 jednostka = 1 Wh (×0.001 kWh). Zużycie = suma przyrostów w oknie.
+    Bez deduplikacji — collector deduplikuje przy zapisie, baza jest czysta.
+
+    Args:
+        ts_from: Start zakresu (epoch UTC).
+        ts_to: Koniec zakresu (epoch UTC).
+
+    Returns:
+        Zużycie w kWh lub None, jeśli w oknie brak raportów add_ele.
+    """
+    with db_cursor() as cursor:
+        cursor.execute('''
+            SELECT COALESCE(SUM(val_num), 0), COUNT(*)
+            FROM telemetry
+            WHERE device_id = ? AND code = 'add_ele'
+              AND timestamp >= ? AND timestamp <= ?
+        ''', (ENERGY_METER_DEV_ID, ts_from, ts_to))
+        row = cursor.fetchone()
+
+    if not row or row[1] == 0:
+        return None
+
+    wh = row[0]
+    return wh / 1000.0  # Wh -> kWh
+
+
+def get_meter_energy_consumption(ts_from: int, ts_to: int) -> Optional[float]:
+    """
+    Oblicza zużycie energii z licznika w zadanym zakresie czasu.
+    
+    Args:
+        ts_from: Start zakresu (epoch UTC)
+        ts_to: Koniec zakresu (epoch UTC)
+    
+    Returns:
+        Zużycie w kWh (różnica między ostatnim i pierwszym odczytem) lub None,
+        jeśli brak wystarczających danych (minimum 2 odczyty).
+    """
+    with db_cursor() as cursor:
+        cursor.execute('''
+            SELECT val_num, timestamp
+            FROM telemetry
+            WHERE device_id = ? AND code = 'energy_kwh'
+              AND timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC
+        ''', (MANUAL_METER_DEV_ID, ts_from, ts_to))
+        rows = cursor.fetchall()
+    
+    if len(rows) < 2:
+        return None
+    
+    first_val = rows[0][0]
+    last_val = rows[-1][0]
+    if first_val is None or last_val is None:
+        return None
+    
+    return last_val - first_val

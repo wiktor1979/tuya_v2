@@ -4,9 +4,14 @@ v1 miał gotowy df_pivot z process_telemetry() (z resample). v2 liczy energię
 z surowych danych, ale strona Analiza potrzebuje pivotu z policzonymi kolumnami
 (COP, delta_t, Tryb, comp_on, cykle) do WIZUALIZACJI i DIAGNOSTYKI.
 
-WAŻNE: ten pivot służy TYLKO do wykresów i diagnostyki (COP chwilowy, ΔT, cykle).
-NIE liczy energii/SCOP — od tego jest compute_energy(). Zgodnie z zasadą v2:
-resample/pivot tylko do wizualizacji, energia zawsze z surowych.
+WAŻNE:
+- Ten pivot służy TYLKO do wykresów i diagnostyki (COP chwilowy, ΔT, cykle).
+- NIE liczy energii/SCOP — od tego jest compute_energy().
+- Zgodnie z zasadą v2: resample/pivot tylko do wizualizacji, energia zawsze z surowych.
+- COP/p_el obliczane SUROWO (bez sensor_factor/standby/active/hidden) — to jest
+  "COP surowy" (tylko sprężarka), nie "SCOP z kalibracją". Różnica: pompa obiegowa,
+  wentylator, elektronika są niewidoczne w czujniku prądu, ale widoczne w liczniku.
+  SCOP (z compute_energy) to poprawiony model CAŁEJ pompy.
 """
 import sqlite3
 from typing import Optional
@@ -16,7 +21,7 @@ import pandas as pd
 import streamlit as st
 
 from app.config import (
-    DB_FILE, HEAT_PUMP_DEV_ID, DEFAULT_TIME_OFFSET_HOURS,
+    DB_FILE, HEAT_PUMP_DEV_ID, SERVER_TIMEZONE_OFFSET,
     COMP_FREQ_ON_THRESHOLD, CWU_VALVE_THRESHOLD, TEMP_CODES,
     DEFAULT_COS_PHI,
 )
@@ -39,7 +44,7 @@ def load_analiza_pivot(
     all_time: bool = False,
     db_file: str = DB_FILE,
     device_id: str = HEAT_PUMP_DEV_ID,
-    time_offset_hours: int = DEFAULT_TIME_OFFSET_HOURS,
+    time_offset_hours: int = SERVER_TIMEZONE_OFFSET,
     cos_phi: float = DEFAULT_COS_PHI,
 ) -> pd.DataFrame:
     """Ładuje surowe dane i buduje pivot v1-compatible do wizualizacji/diagnostyki.

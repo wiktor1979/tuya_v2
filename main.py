@@ -15,7 +15,7 @@ from app.services.notifier import (
 from app.config import (
     LATITUDE, LONGITUDE, LOCATION_NAME,
     TELEGRAM_ENABLED, DAILY_REPORT_HOUR, HEAT_PUMP_DEV_ID,
-    SERVER_TIMEZONE_OFFSET,
+    SERVER_TIMEZONE_OFFSET, ENERGY_METER_DEV_ID,
 )
 
 # Śledzenie ostatniego odbioru danych per urządzenie
@@ -72,6 +72,12 @@ def communication_watchdog_loop():
         now = time.time()
 
         for dev_id, last_ts in list(_last_data_received.items()):
+            # Licznik energii pomijany: w postoju (0 W, brak przyrostu) Tuya nie
+            # przysyła ramek nawet przez 1-2 h — heartbeat nie tworzy zapisów, więc
+            # cisza jest normalna, nie oznacza utraty komunikacji.
+            if dev_id == ENERGY_METER_DEV_ID:
+                continue
+
             silent_sec = now - last_ts
 
             if silent_sec >= COMM_LOST_THRESHOLD_SEC and dev_id not in _comm_lost_alerted:
@@ -89,6 +95,8 @@ def daily_report_loop():
 
     # Godzina wysyłki liczona w UTC (niezależnie od strefy procesu na serwerze).
     # Czas lokalny = UTC + SERVER_TIMEZONE_OFFSET  =>  UTC = lokalny - offset.
+    # Wartość SERVER_TIMEZONE_OFFSET jest obliczana dynamicznie przez get_timezone_offset()
+    # w config.py (używa zoneinfo), co zapewnia automatyczne DST.
     utc_hour = (DAILY_REPORT_HOUR - SERVER_TIMEZONE_OFFSET) % 24
     print(f"Uruchomiono watek raportu dziennego (lokalnie: {DAILY_REPORT_HOUR}:00, UTC: {utc_hour}:00, offset: {SERVER_TIMEZONE_OFFSET}h)", flush=True)
     last_report_date = None
@@ -209,8 +217,6 @@ def main():
         print("Uruchamianie w trybie pojedynczego konta...", flush=True)
         client = TuyaPulsarClient(accounts[0])
         client.connect()
-        
-        print("Oczekiwanie na zdarzenia z pompy ciepla (z wlaczonym filtrem Deadband)...\n", flush=True)
         
         try:
             client.listen(save_with_fault_detection)

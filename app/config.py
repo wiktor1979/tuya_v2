@@ -35,6 +35,22 @@ DB_FILE: str = os.environ.get("DB_FILE", "./data/tuya_telemetry.db")
 # --- Urządzenia ---
 HEAT_PUMP_DEV_ID: str = "bf874f7ae72aca1fc23op0"
 MANUAL_METER_DEV_ID: str = "licznikRęczny"
+ENERGY_METER_DEV_ID: str = "bf215e9c483af020b12cak"
+"""Inteligentny licznik prądu z odczytem zdalnym (Tuya, to samo konto co pompa).
+Na etapie rozpoznania zapisujemy WSZYSTKIE parametry z tego urządzenia
+surowo (bypass DeadbandFilter), żeby zobaczyć jakie kody DP przesyła."""
+
+# Czytelne nazwy urządzeń — używane w powiadomieniach Telegram i UI zamiast device_id.
+DEVICE_NAMES: dict[str, str] = {
+    HEAT_PUMP_DEV_ID: "Pompa",
+    ENERGY_METER_DEV_ID: "Licznik",
+    MANUAL_METER_DEV_ID: "Licznik ręczny",
+}
+
+
+def get_device_name(device_id: str) -> str:
+    """Zwraca czytelną nazwę urządzenia (fallback: samo device_id)."""
+    return DEVICE_NAMES.get(device_id, device_id)
 
 # --- Kody telemetryczne potrzebne do bilansu energetycznego ---
 ENERGY_CODES: tuple[str, ...] = (
@@ -69,10 +85,14 @@ CWU_VALVE_THRESHOLD: float = 0.5
 
 # --- Parametry fizyczne (domyślne) ---
 DEFAULT_COS_PHI: float = 0.95
-DEFAULT_STANDBY_POWER_W: float = 25.0
-"""Moc standby WIDOCZNA w czujniku [W] (gdy raw P_el < 100W)."""
-DEFAULT_ACTIVE_POWER_W: float = 40.0
-"""Dodatkowa moc WIDOCZNA w czujniku podczas pracy sprężarki [W]."""
+DEFAULT_STANDBY_POWER_W: float = 4.0
+"""Pobór pompy w standby [W]. Zmierzone licznikiem fizycznym (2026-09-02):
+obwód licznika = TYLKO pompa ciepła, cur_power w spoczynku ~4 W (moc czynna).
+Wcześniej 25 W (szacunek dopasowany do sondy prądowej przed montażem licznika)."""
+DEFAULT_ACTIVE_POWER_W: float = 60.0
+"""Dodatkowa moc WIDOCZNA w czujniku podczas pracy sprężarki [W].
+Ustawione 60 W (2026-09-02) — synchronizacja z wartością w tabeli settings,
+która jest realnie używana przez load_calibration(). Config = fallback dla pustej bazy."""
 DEFAULT_HIDDEN_POWER_W: float = 0.0
 """Stały pobór NIEWIDOCZNY w czujniku [W]. Kalibrowany z licznika. 0 = brak (dane letnie nie dają sensownego hidden)."""
 DEFAULT_SENSOR_FACTOR: float = 0.98
@@ -83,11 +103,23 @@ HDD_BASE_TEMP_C: float = 15.0
 """Temperatura bazowa dla Heating Degree Days [°C]."""
 
 # --- Strefa czasowa ---
-DEFAULT_TIME_OFFSET_HOURS: int = int(os.environ.get("SERVER_TIMEZONE_OFFSET", "2"))
-"""Przesunięcie strefy czasowej vs UTC. Domyślnie CEST=2."""
+def get_timezone_offset() -> int:
+    """Dynamicznie oblicza offset strefy czasowej (uwzględnia DST automatycznie).
+    
+    Używa strefy 'Europe/Warsaw' — latem +2 (CEST), zimą +1 (CET).
+    Działa na Python 3.9+ (zoneinfo w stdlib).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        return int(datetime.now(ZoneInfo("Europe/Warsaw")).utcoffset().total_seconds() // 3600)
+    except Exception:
+        # Fallback dla środowisk bez zoneinfo
+        return 2
 
-# Alias dla kompatybilności z collectorem/notifierem
-SERVER_TIMEZONE_OFFSET: int = DEFAULT_TIME_OFFSET_HOURS
+
+# Aktualna wartość — używana w całej aplikacji
+SERVER_TIMEZONE_OFFSET: int = get_timezone_offset()
 
 # --- Sezon grzewczy ---
 HEATING_SEASON_START_MONTH: int = 9   # wrzesień
@@ -110,6 +142,10 @@ HISTERESIS_CONFIG: dict = {
     "dc_fan2":        {"active": 50.0, "idle": 50.0, "last_value": None},
     "m_eev":          {"active": 5.0, "idle": 20.0, "last_value": None},
     "a_eev":          {"active": 5.0, "idle": 20.0, "last_value": None},
+    # Licznik energii (ENERGY_METER_DEV_ID). Wartości surowe; cur_power skala ×0.1 W.
+    # Próg 5 (surowo) = 0.5 W. Jeden próg — licznik niezależny od stanu sprężarki pompy.
+    # Zmienione 2026-09-03: wcześniejsze 20.0 (2.0 W) pomijało zbyt wiele danych.
+    "cur_power":      {"active": 5.0, "idle": 5.0, "last_value": None},
 }
 
 MAX_HEARTBEAT_SEC: int = 300

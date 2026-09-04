@@ -9,6 +9,9 @@ primary_region = 'ams'
 [build]
 
 [env]
+  # SERVER_TIMEZONE_OFFSET jest nadpisywany dynamiczną funkcją get_timezone_offset()
+  # w config.py (używa zoneinfo dla Europe/Warsaw: CEST=+2, CET=+1).
+  # Ta wartość służy tylko jako fallback dla środowisk bez zoneinfo.
   SERVER_TIMEZONE_OFFSET = "2"
   DAILY_REPORT_HOUR = "8"
   DB_FILE = "/data/tuya_telemetry.db"

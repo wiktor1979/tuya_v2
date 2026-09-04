@@ -17,7 +17,7 @@ from app.ui.helpers import (
 )
 from app.ui.labels import METRICS
 from app.config import (
-    PARAM_INFO, get_param_label,
+    PARAM_INFO, get_param_label, HEAT_PUMP_DEV_ID,
 )
 from app.core.energy import scop_from_result, compute_energy
 
@@ -176,11 +176,10 @@ def render_live():
     t_cwu = get_temp_value(status, "tank_temp")
     t_set_cwu = get_temp_value(status, "hot_water_temp_set")
 
-    render_temp_bar_setpoint("🔥 CO", t_supply, t_set_co, "temp-bar-co", max_temp=55.0, min_temp=15.0)
+    # Wspólna skala dla obu barów (15–60°C), aby ta sama nastawa była w tym samym
+    # miejscu i paski były porównywalne wprost (różne skale myliły — 35°C wypadało indziej).
+    render_temp_bar_setpoint("🔥 CO", t_supply, t_set_co, "temp-bar-co", max_temp=60.0, min_temp=15.0)
     render_temp_bar_setpoint("🚿 CWU", t_cwu, t_set_cwu, "temp-bar-cwu", max_temp=60.0, min_temp=15.0)
-
-    if st.button("⚡ Wpisz stan licznika"):
-        st.switch_page("pages/4_Licznik.py")
 
 
 render_live()
@@ -192,13 +191,13 @@ st.subheader("📈 Przebieg parametrów")
 
 
 @st.cache_data(ttl=60)
-def _load_chart_data(date_from: str, device_id: str = "bf874f7ae72aca1fc23op0") -> pd.DataFrame:
+def _load_chart_data(date_from: str, device_id: str = HEAT_PUMP_DEV_ID) -> pd.DataFrame:
     """Surowe dane do wykresu (resample do wizualizacji, NIE do obliczeń)."""
     import sqlite3
-    from app.config import DB_FILE, DEFAULT_TIME_OFFSET_HOURS
+    from app.config import DB_FILE, SERVER_TIMEZONE_OFFSET
     try:
         conn = sqlite3.connect(DB_FILE)
-        off = DEFAULT_TIME_OFFSET_HOURS
+        off = SERVER_TIMEZONE_OFFSET
         query = f"""
             SELECT datetime(timestamp, 'unixepoch', '{off:+d} hours') as czas,
                    code, val_num

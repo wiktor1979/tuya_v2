@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_ENABLED,
-    HEAT_PUMP_DEV_ID, DB_FILE,
+    HEAT_PUMP_DEV_ID, DB_FILE, get_device_name,
 )
 from app.services.analytics import decode_fault_bitmap
 
@@ -67,7 +67,7 @@ def send_fault_alert(device_id: str, fault_codes: List[str], fault_bitmap: int) 
     codes_str = ", ".join(fault_codes)
     msg = (
         f"🚨 *AWARIA POMPY CIEPŁA*\n"
-        f"Urządzenie: `{device_id}`\n"
+        f"Urządzenie: *{get_device_name(device_id)}*\n"
         f"Kody błędów: *{codes_str}*\n"
         f"Bitmapa: {fault_bitmap}\n"
         f"Czas: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -87,7 +87,7 @@ def send_fault_resolved(device_id: str, resolved_codes: List[str]) -> bool:
     codes_str = ", ".join(resolved_codes)
     msg = (
         f"✅ *Awaria rozwiązana*\n"
-        f"Urządzenie: `{device_id}`\n"
+        f"Urządzenie: *{get_device_name(device_id)}*\n"
         f"Rozwiązane kody: *{codes_str}*\n"
         f"Czas: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
@@ -105,7 +105,7 @@ def send_communication_lost(device_id: str, minutes_silent: int) -> bool:
 
     msg = (
         f"📡 *Utrata komunikacji*\n"
-        f"Urządzenie: `{device_id}`\n"
+        f"Urządzenie: *{get_device_name(device_id)}*\n"
         f"Brak danych od: *{minutes_silent} min*\n"
         f"Czas: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
@@ -125,7 +125,7 @@ def build_daily_report(device_id: str) -> Optional[str]:
     Returns:
         Tekst raportu Markdown lub None jeśli brak danych.
     """
-    from app.services.database import db_cursor, get_fault_history, load_calibration
+    from app.services.database import db_cursor, get_fault_history, load_calibration, get_remote_meter_energy
     from app.core.energy import compute_energy
     from app.config import SERVER_TIMEZONE_OFFSET
     import pandas as pd
@@ -139,8 +139,10 @@ def build_daily_report(device_id: str) -> Optional[str]:
     hidden_power_w = cal["hidden_power_w"]
     sensor_factor = cal["sensor_factor"]
 
-    # Czas lokalny = UTC + SERVER_TIMEZONE_OFFSET (offset strefy lokalnej vs UTC, np. +2 dla CEST).
+    # Czas lokalny = UTC + SERVER_TIMEZONE_OFFSET (offset strefy lokalnej vs UTC, np. +2 dla CEST, +1 dla CET).
     # Liczymy z UTC, żeby wynik nie zależał od strefy procesu na serwerze.
+    # Wartość SERVER_TIMEZONE_OFFSET jest obliczana dynamicznie przez get_timezone_offset()
+    # w config.py (używa zoneinfo), co zapewnia automatyczne DST.
     now_local = datetime.now(timezone.utc) + timedelta(hours=SERVER_TIMEZONE_OFFSET)
     today = now_local.date()
     yesterday = today - timedelta(days=1)
@@ -165,12 +167,15 @@ def build_daily_report(device_id: str) -> Optional[str]:
     hours_work = result.comp_hours
     defrost_count = result.defrost_count
 
-    # Zakres timestamp (epoch UTC) dla fault_history.
+    # Zakres timestamp (epoch UTC) dla fault_history i licznika.
     # Północ lokalna dnia D w epoch UTC = epoch(D 00:00 UTC) - offset*3600
     # (bo czas lokalny = UTC + offset  =>  UTC = lokalny - offset).
     offset_sec = SERVER_TIMEZONE_OFFSET * 3600
     ts_start = int(datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=timezone.utc).timestamp()) - offset_sec
     ts_end = int(datetime(today.year, today.month, today.day, tzinfo=timezone.utc).timestamp()) - offset_sec
+
+    # Zużycie z licznika zdalnego Tuya (add_ele) za wczoraj
+    meter_consumption = get_remote_meter_energy(ts_start, ts_end)
 
     # Awarie z fault_log za wczoraj
     with db_cursor() as cursor:
@@ -184,7 +189,7 @@ def build_daily_report(device_id: str) -> Optional[str]:
 
     # --- Budowanie raportu ---
     date_str = yesterday.strftime("%Y-%m-%d")
-    lines = [f"📊 *Raport dzienny — {date_str}*", f"Urządzenie: `{device_id}`", ""]
+    lines = [f"📊 *Raport dzienny — {date_str}*", f"Urządzenie: *{get_device_name(device_id)}*", ""]
 
     # SCOP dzienny
     if scop is not None and scop > 0.5:
@@ -193,11 +198,17 @@ def build_daily_report(device_id: str) -> Optional[str]:
     else:
         lines.append("SCOP dzienny: _brak danych_")
 
-    # Zużycie energii
+    # Zużycie energii (model)
     if e_el > 0:
-        lines.append(f"⚡ Zużycie energii: *{e_el:.2f} kWh*")
+        lines.append(f"⚡ Zużycie energii (model): *{e_el:.2f} kWh*")
     else:
-        lines.append("⚡ Zużycie energii: _brak danych_")
+        lines.append("⚡ Zużycie energii (model): _brak danych_")
+
+    # Zużycie energii (licznik) — jeśli dostępne
+    if meter_consumption is not None and meter_consumption > 0:
+        lines.append(f"⚡ Zużycie energii (licznik): *{meter_consumption:.2f} kWh*")
+    else:
+        lines.append("⚡ Zużycie energii (licznik): _brak danych_")
 
     # Czas pracy sprężarki
     lines.append(f"⏱ Czas pracy: *{hours_work:.1f} h*")

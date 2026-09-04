@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from app.ui.styles import inject_css, render_scop_box, STATUS_COLORS, render_about
-from app.ui.helpers import cached_energy, load_calibration
+from app.ui.helpers import cached_energy, load_calibration, cached_meter_energy
 from app.ui.analiza_helpers import load_analiza_pivot
 from app.ui.labels import METRICS, scop_delta, e_el_help_with_standby
 from app.config import (
@@ -54,6 +54,9 @@ st.caption(_okres)
 # Dzięki temu wszystkie SCOP są spójne i pochodzą z tych samych składowych energii.
 energy = cached_energy(date_from=date_from, daily_breakdown=True, **cal)
 
+# Energia pobrana wg fizycznego licznika (suma add_ele, ×0.001 kWh) — ten sam zakres.
+meter_kwh = cached_meter_energy(date_from=date_from)
+
 if energy.e_el_total <= 0:
     st.info("Brak danych energetycznych w wybranym zakresie. Zmień zakres w panelu bocznym.")
     st.stop()
@@ -91,8 +94,8 @@ with st.container(key="bilans_kpi"):
             st.metric(METRICS["scop_cwu_empty"]["label"], "—",
                       help=METRICS["scop_cwu_empty"]["help"])
 
-    # === Energia: 3 metryki ===
-    e1, e2, e3 = st.columns(3)
+    # === Energia: 4 metryki (ostatnia = fizyczny licznik) ===
+    e1, e2, e3, e4 = st.columns(4)
     e1.metric(METRICS["e_el"]["label"], f"{energy.e_el_total:.2f} kWh",
               help=e_el_help_with_standby(energy.e_el_standby, energy.e_el_total))
     e2.metric(METRICS["e_th"]["label"], f"{energy.e_th_total:.2f} kWh",
@@ -100,22 +103,31 @@ with st.container(key="bilans_kpi"):
     e3.metric(METRICS["e_th_defrost"]["label"],
               f"{energy.e_th_defrost:.3f} kWh" if energy.e_th_defrost < 0 else "0 kWh",
               help=METRICS["e_th_defrost"]["help"])
+    e4.metric(METRICS["e_el_meter"]["label"],
+              f"{meter_kwh:.2f} kWh" if meter_kwh > 0 else "—",
+              help=METRICS["e_el_meter"]["help"])
 
 # === Tabela podziału CO/CWU/Defrost/Total ===
 st.markdown("---")
 st.subheader("📊 Podział energii wg trybu")
 
 rows = [
-    ["🏠 CO", f"{energy.e_el_co:.2f}", f"{energy.e_th_co:.2f}", f"{scop_co:.2f}" if scop_co > 0 else "—"],
-    ["🚿 CWU", f"{energy.e_el_cwu:.2f}", f"{energy.e_th_cwu:.2f}", f"{scop_cwu:.2f}" if scop_cwu > 0 else "—"],
+    ["🏠 CO", f"{energy.e_el_co:.2f}", f"{energy.e_th_co:.2f}", f"{scop_co:.2f}" if scop_co > 0 else "—", "—"],
+    ["🚿 CWU", f"{energy.e_el_cwu:.2f}", f"{energy.e_th_cwu:.2f}", f"{scop_cwu:.2f}" if scop_cwu > 0 else "—", "—"],
 ]
 if energy.e_el_standby > 0:
-    rows.append(["⏸ Standby", f"{energy.e_el_standby:.2f}", "—", "—"])
+    rows.append(["⏸ Standby", f"{energy.e_el_standby:.2f}", "—", "—", "—"])
 if energy.e_th_defrost < 0:
-    rows.append(["❄️ Defrost", "—", f"{energy.e_th_defrost:.3f}", "—"])
-rows.append(["**Σ Total (realny)**", f"**{energy.e_el_total:.2f}**", f"**{energy.e_th_total_real:.2f}**", f"**{scop_total:.2f}**"])
+    rows.append(["❄️ Defrost", "—", f"{energy.e_th_defrost:.3f}", "—", "—"])
+rows.append([
+    "**Σ Total (realny)**",
+    f"**{energy.e_el_total:.2f}**",
+    f"**{energy.e_th_total_real:.2f}**",
+    f"**{scop_total:.2f}**",
+    f"**{meter_kwh:.2f}**" if meter_kwh > 0 else "—",
+])
 
-table_df = pd.DataFrame(rows, columns=["Tryb", "E_el [kWh]", "E_th [kWh]", "SCOP"])
+table_df = pd.DataFrame(rows, columns=["Tryb", "E_el [kWh]", "E_th [kWh]", "SCOP", "E_el licznik [kWh]"])
 st.table(table_df)
 
 # === Statystyki ===

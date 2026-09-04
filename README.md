@@ -20,6 +20,7 @@ tuya_v2/
 │       ├── calibration.py   — kalibracja z licznika (hidden_power_w + sensor_factor)
 │       ├── models.py        — modele danych (dataclasses / TypedDict)
 │       └── config.py        — stałe konfiguracyjne, progi, parametry czujników
+│           └── get_timezone_offset() — automatyczne wyliczanie strefy czasowej (DST)
 ├── tests/                   — testy jednostkowe i integracyjne
 │   └── test_calibration.py  — testy modelu kalibracji
 ├── requirements.txt
@@ -37,6 +38,7 @@ tuya_v2/
 - **Czysty Python** — rdzeń bez zależności od Streamlit ani frameworków webowych
 - **Addytywny model kalibracji** (`hidden_power_w` + `sensor_factor`) zamiast pojedynczego mnożnika — działa poprawnie zarówno latem JAK I zimą
 - **Sonda prądowa mierzy tylko kompresor** — `hidden_power_w` kompensuje pompę obiegową, elektronikę i inne stałe odbiorniki
+- **Automatyczne przeliczanie strefy czasowej** — `get_timezone_offset()` z `zoneinfo` dla `Europe/Warsaw` (CEST=+2, CET=+1), bez ręcznej zmiany przy DST
 
 ## Testy
 

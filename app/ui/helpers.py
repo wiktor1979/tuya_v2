@@ -1,14 +1,15 @@
 """Helpery UI — cache, ładowanie statusu na żywo, formatowanie."""
 import sqlite3
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
 
 from app.config import (
-    DB_FILE, ENERGY_CODES, HEAT_PUMP_DEV_ID,
+    DB_FILE, ENERGY_CODES, HEAT_PUMP_DEV_ID, ENERGY_METER_DEV_ID,
     DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
-    DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR, DEFAULT_TIME_OFFSET_HOURS,
+    DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR, SERVER_TIMEZONE_OFFSET,
 )
 from app.core.energy import compute_energy
 from app.core.models import EnergyResult
@@ -21,7 +22,7 @@ def cached_energy(
     date_to: Optional[str] = None,
     mode: str = "total",
     daily_breakdown: bool = False,
-    time_offset_hours: int = DEFAULT_TIME_OFFSET_HOURS,
+    time_offset_hours: int = SERVER_TIMEZONE_OFFSET,
     cos_phi: float = DEFAULT_COS_PHI,
     standby_power_w: float = DEFAULT_STANDBY_POWER_W,
     active_power_w: float = DEFAULT_ACTIVE_POWER_W,
@@ -44,6 +45,58 @@ def cached_energy(
         hidden_power_w=hidden_power_w,
         sensor_factor=sensor_factor,
     )
+
+
+@st.cache_data(ttl=60)
+def cached_meter_energy(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    time_offset_hours: int = SERVER_TIMEZONE_OFFSET,
+    db_file: str = DB_FILE,
+) -> float:
+    """Energia pobrana wg fizycznego licznika [kWh] w zadanym zakresie.
+
+    Źródłem jest add_ele — przyrost energii raportowany przez licznik Tuya.
+    Skala potwierdzona empirycznie (2026-09-04): 1 jednostka = 1 Wh (×0.001 kWh).
+    Zużycie = suma przyrostów w oknie. add_ele całkuje sam licznik, więc jest
+    odporne na dziury w telemetrii (w przeciwieństwie do ZOH z cur_power).
+
+    Bez deduplikacji — collector deduplikuje add_ele przy zapisie, a baza jest
+    już wyczyszczona z historycznych par (patrz decyzje projektowe 2026-09-04).
+    Zwraca 0.0 przy braku danych.
+    """
+    offset_sec = time_offset_hours * 3600
+
+    # Data lokalna -> epoch UTC (spójnie z energy._resolve_time_range: local - offset).
+    if date_from is None:
+        ts_from = 0
+    else:
+        dt = datetime.strptime(date_from, "%Y-%m-%d")
+        ts_from = int((dt - datetime(1970, 1, 1)).total_seconds()) - offset_sec
+    if date_to is None:
+        ts_to = int(datetime.now(timezone.utc).timestamp())
+    else:
+        dt_to = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+        ts_to = int((dt_to - datetime(1970, 1, 1)).total_seconds()) - offset_sec
+
+    try:
+        conn = sqlite3.connect(db_file)
+        df = pd.read_sql_query(
+            """SELECT val_num FROM telemetry
+               WHERE device_id = ? AND code = 'add_ele'
+                 AND timestamp >= ? AND timestamp <= ?""",
+            conn, params=(ENERGY_METER_DEV_ID, ts_from, ts_to),
+        )
+        conn.close()
+    except Exception:
+        return 0.0
+
+    if df.empty:
+        return 0.0
+
+    # add_ele w Wh (×0.001 kWh). Suma przyrostów = zużycie w oknie.
+    wh = float(df["val_num"].fillna(0).sum())
+    return wh / 1000.0  # Wh -> kWh
 
 
 def load_latest_status(db_file: str = DB_FILE, device_id: str = HEAT_PUMP_DEV_ID) -> dict:

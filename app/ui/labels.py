@@ -83,6 +83,16 @@ METRICS: dict[str, dict[str, str]] = {
         "label": "⚡ Prąd pobrany",
         "help": "Całkowita energia elektryczna:\n\npraca sprężarki + standby.",
     },
+    "e_el_meter": {
+        "label": "⚡ Prąd pobrany (licznik)",
+        "help": (
+            "Energia zmierzona przez fizyczny licznik Tuya (suma przyrostów add_ele, "
+            "skala 1 jednostka = 1 Wh).\n\n"
+            "Pomiar CAŁEJ pompy (kompresor + pompa obiegowa + elektronika), "
+            "niezależny od modelu z sondy prądowej. add_ele całkuje sam licznik, "
+            "więc jest odporny na dziury w telemetrii."
+        ),
+    },
     "e_el_short": {
         "label": "Energia",
         "help": (

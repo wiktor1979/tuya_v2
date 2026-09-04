@@ -9,8 +9,16 @@ import pulsar
 
 from app.config import (
     TUYA_ACCOUNTS, PULSAR_SERVER_EU, 
-    MQ_ENV_PROD, TEMP_CODES, HISTERESIS_CONFIG, MAX_HEARTBEAT_SEC
+    MQ_ENV_PROD, TEMP_CODES, HISTERESIS_CONFIG, MAX_HEARTBEAT_SEC,
+    ENERGY_METER_DEV_ID,
 )
+
+
+# Próg deduplikacji add_ele [s]. Licznik Tuya wysyła każdy raport add_ele
+# PODWOJONY (ta sama wartość, ts ±1 s) — retransmisja po stronie urządzenia/bramki.
+# Realne raporty add_ele dzieli ~1800 s (30 min), więc 3 s bezpiecznie odsiewa
+# tylko duplikat, nie tnąc prawdziwych przyrostów.
+ADD_ELE_DEDUP_SEC = 3
 
 
 def get_tuya_accounts() -> List[Dict[str, Any]]:
@@ -21,7 +29,7 @@ def get_tuya_accounts() -> List[Dict[str, Any]]:
 class DeadbandFilter:
     """Filtr deadband dla telemetrii - obsługa dynamicznej histerezy."""
     
-    __slots__ = ['last_saved_val', 'last_saved_time']
+    __slots__ = ['last_saved_val', 'last_saved_time', 'last_add_ele_time']
 
     # Parametry bez heartbeatu — zapisywane TYLKO gdy wartość się zmieni.
     # Flagi binarne i rzadko zmieniające się stany (99-100% duplikatów przy heartbeat).
@@ -33,6 +41,9 @@ class DeadbandFilter:
     def __init__(self):
         self.last_saved_val: Dict[str, Any] = {}
         self.last_saved_time: Dict[str, float] = {}
+        # Czas zdarzenia (event_time z ramki) ostatnio zapisanego add_ele.
+        # Służy deduplikacji podwojonych ramek add_ele (retransmisja Tuya, ts ±1 s).
+        self.last_add_ele_time: float = 0.0
     
     def should_save(self, code: str, new_val: Any, compressor_status: int = 0) -> bool:
         """
@@ -206,8 +217,11 @@ class TuyaPulsarClient:
             raw_ts = data.get("ts") or biz_data.get("ts")
             event_time = int(raw_ts / 1000) if raw_ts else int(time.time())
 
-            # Filtruj urządzenia jeśli lista monitorowanych jest określona
-            if self.monitored_devices and dev_id not in self.monitored_devices:
+            # Filtruj urządzenia jeśli lista monitorowanych jest określona.
+            # Licznik energii ZAWSZE przepuszczany, niezależnie od listy.
+            if (self.monitored_devices
+                    and dev_id not in self.monitored_devices
+                    and dev_id != ENERGY_METER_DEV_ID):
                 return  # Ignoruj urządzenia spoza listy monitorowanych
 
             if dev_id and status_list:
@@ -222,17 +236,39 @@ class TuyaPulsarClient:
                 
                 filtered_status_list = []
 
-                for item in status_list:
-                    code = item.get("code")
-                    val = item.get("value")
+                # Licznik energii — wariant minimalny:
+                #   - add_ele  : przyrost energii, zapisywany ZAWSZE (bypass filtra,
+                #                inaczej powtórzone przyrosty zostałyby zgubione).
+                #   - cur_power: moc czynna [W], przez DeadbandFilter (histereza ~2 W).
+                #   - cur_voltage / cur_current: POMIJANE (tylko diagnostyka, nie energia).
+                if dev_id == ENERGY_METER_DEV_ID:
+                    for item in status_list:
+                        code = item.get("code")
+                        if code == "add_ele":
+                            # Deduplikacja retransmisji: Tuya wysyła każdy raport add_ele
+                            # podwojony (ts ±1 s). Pomiń, jeśli od ostatniego zapisanego
+                            # add_ele minęło < ADD_ELE_DEDUP_SEC. Realne raporty dzieli
+                            # ~1800 s, więc próg 3 s odsiewa tylko duplikat.
+                            if (event_time - self.filter.last_add_ele_time) < ADD_ELE_DEDUP_SEC:
+                                continue
+                            self.filter.last_add_ele_time = event_time
+                            filtered_status_list.append(item)
+                        elif code == "cur_power":
+                            if self.filter.should_save(code, item.get("value"), compressor_status):
+                                filtered_status_list.append(item)
+                        # pozostałe kody licznika ignorujemy
+                else:
+                    for item in status_list:
+                        code = item.get("code")
+                        val = item.get("value")
 
-                    # Przeliczenie wartości do testu (temperatury / 10)
-                    check_val = val
-                    if code in TEMP_CODES and isinstance(val, (int, float)) and not isinstance(val, bool):
-                        check_val = val / 10.0
+                        # Przeliczenie wartości do testu (temperatury / 10)
+                        check_val = val
+                        if code in TEMP_CODES and isinstance(val, (int, float)) and not isinstance(val, bool):
+                            check_val = val / 10.0
 
-                    if self.filter.should_save(code, check_val, compressor_status):
-                        filtered_status_list.append(item)
+                        if self.filter.should_save(code, check_val, compressor_status):
+                            filtered_status_list.append(item)
 
                 if filtered_status_list:
                     is_saved = save_callback(dev_id, filtered_status_list, event_time)

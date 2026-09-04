@@ -4,8 +4,170 @@
    Poprawki/redeploye po nieudanym deployu NIE są kontynuacją poprzedniej zgody. Bez "tak, deployuj" — nie deployować.
 2. WYBÓR OPCJI: gdy przedstawiam warianty (A/B/...), ZATRZYMUJĘ SIĘ i czekam na decyzję użytkownika.
    NIE implementuję żadnej opcji z automatu, nawet jeśli którąś rekomenduję. Najpierw wybór użytkownika, potem implementacja.
+3. SYNC BAZY: zmiany w bazie LOKALNEJ (np. `settings`/kalibracja przez set_setting) trzeba TAKŻE nanieść
+   na bazę PRODUKCYJNĄ na Fly.io. Lokalna jest robocza i bywa nadpisywana pobraniem z Fly, więc zmiana
+   tylko lokalnie zostanie utracona. Konfigurację nanosić punktowo (fly ssh -C set_setting), NIE wysyłać
+   całej bazy w drugą stronę (nadpisałoby świeżą telemetrię produkcyjną).
+   KOLEJNOŚĆ (obowiązkowa): NAJPIERW zmiana LOKALNIE, potem ZATRZYMAĆ SIĘ i CZEKAĆ na wyraźne
+   potwierdzenie użytkownika. Dopiero po "tak" aplikować na produkcji. Nigdy lokalnie i produkcyjnie
+   w jednym kroku bez pytania.
+4. ZMIANY KODU: przed każdą zmianą w kodzie (nawet małych) pytać: "Czy chcesz żebym nanieśł zmianę X?"
+   Czekać na wyraźne "tak" przed wykonaniem. Nigdy zmieniać bez zgody.
+5. PROPOZYCJA PRZED IMPLEMENTACJĄ (obowiązuje ZAWSZE, nadrzędna nad domyślnym zachowaniem agenta):
+   Dla KAŻDEGO zadania NAJPIERW przedstawiam PROPOZYCJĘ rozwiązania (co i jak zamierzam zrobić,
+   które pliki, jaki efekt) i ZATRZYMUJĘ SIĘ. Przechodzę do implementacji DOPIERO po jawnym
+   zatwierdzeniu przez użytkownika ("tak", "rób", "zatwierdzam" itp.). Dotyczy to zmian w kodzie,
+   konfiguracji, bazie i wszelkich modyfikacji plików. Wyjątek: operacje wyłącznie odczytowe
+   (czytanie plików, zapytania SELECT do bazy, analiza, diagnostyka) — te wykonuję od razu.
+   Samo pytanie użytkownika (np. "sprawdź X", "dlaczego Y") NIE jest zgodą na modyfikację.
 
 ---
+
+## Ustalenia i zmiany — 2026-09-04
+
+### Operacje na produkcji Fly.io z Windows/PowerShell (2026-09-04) — POWTARZALNE
+- PowerShell PSUJE escaping cudzysłowów w `fly ssh console -C "..."` — znaki `*` i `\` z zapytania
+  SQL są interpretowane przez shell (błąd typu "The term '*' is not recognized..."). To ta sama
+  pułapka co inline `python -c "..."`.
+- ROZWIĄZANIE 1 (proste komendy): cały argument `-C` w POJEDYNCZYCH cudzysłowach, wewnątrz podwójne
+  dla SQL, a apostrofy w SQL PODWOIĆ. Przykład:
+  `fly ssh console -a scop -C 'sqlite3 db "SELECT * FROM t WHERE code=''add_ele'';"'`
+- ROZWIĄZANIE 2 (pewniejsze, złożone skrypty): wgrać plik `.py` i uruchomić zdalnie:
+  `fly ssh sftp put _skrypt.py /data/_skrypt.py -a scop`
+  `fly ssh console -a scop -C 'python /data/_skrypt.py'`
+  potem posprzątać: `fly ssh console -a scop -C 'rm /data/_skrypt.py'`.
+- UWAGA: `sqlite3` CLI NIE jest zainstalowany w kontenerze produkcyjnym (obraz Pythona 3.12).
+  Operacje na bazie robić modułem `sqlite3` z Pythona (Rozwiązanie 2), nie przez sqlite3 CLI.
+- Komunikat `Error: The handle is invalid.` przy `fly ssh` na Windows to ARTEFAKT zamykania sesji
+  SSH, NIE błąd — wyjście komendy wypisuje się poprawnie mimo tego komunikatu.
+
+### Licznik — energia liczona z add_ele zamiast ZOH z cur_power (2026-09-04)
+- ZMIANA: `cached_meter_energy()` w `helpers.py` teraz liczy zużycie z sumy przyrostów
+  `add_ele` (×0.001 kWh), nie z całki ZOH po `cur_power`. Skala add_ele potwierdzona
+  empirycznie: 1 jednostka = 1 Wh.
+- NOWA FUNKCJA: `get_remote_meter_energy(ts_from, ts_to)` w `database.py` — suma add_ele
+  w oknie czasu, zwraca kWh lub None przy braku danych.
+- TELEGRAM: `build_daily_report()` używa teraz `get_remote_meter_energy` (licznik zdalny Tuya)
+  zamiast funkcji ręcznego licznika. Stara funkcja (get_meter_energy_consumption) pozostawiona
+  nieużywana do czasu czystki Zakresu 2.
+- DLACZEGO: add_ele jest pewniejszym źródłem całkowitego zużycia niż ZOH z cur_power —
+  całkuje sam licznik, odporny na dziury w telemetrii (przy postoju i restartach).
+  ZOH z cur_power zaniżał przy brakujących próbkach.
+- UWAGA: wykres mocy na stronie 4_Licznik pozostaje na cur_power (wizualizacja mocy
+  chwilowej). Formularz ręcznego licznika (Zakres 2) nietknięty.
+
+### Licznik — deduplikacja add_ele w collectorze (2026-09-04)
+- POTWIERDZONO (analiza odczytowa), że duplikaty add_ele pochodzą z TUYA, NIE z naszego kodu:
+  - pary mają RÓŻNE `id` i RÓŻNE `timestamp` (±1 s, sporadycznie dts=0) — dwie osobne ramki Pulsar,
+    a nie jeden rekord zapisany dwa razy (ten miałby identyczny event_time);
+  - `cur_power` w tym samym oknie NIE jest dublowany (62 próbki, brak par) — gdyby collector podwajał
+    całe wiadomości, dublowałby też cur_power. Dubluje się WYŁĄCZNIE add_ele → to retransmisja Tuya;
+  - ścieżka zapisu (client.listen → handle_parsed_payload → save_callback) przetwarza każdą ramkę raz
+    i potwierdza acknowledge_cumulative. add_ele ma bypass filtra (zapis zawsze), więc obie ramki-bliźniaki
+    trafiały do bazy.
+- ZMIANA (`app/services/tuya_client.py`): deduplikacja add_ele po CZASIE ZDARZENIA (event_time z ramki).
+  - Stała `ADD_ELE_DEDUP_SEC = 3`. Pomiń add_ele, jeśli (event_time - last_add_ele_time) < 3 s.
+  - Dedup po CZASIE, nie po wartości — bo dwa RÓŻNE realne raporty też mogą mieć tę samą wartość (2 i 2),
+    ale dzieli je ~1800 s. Próg 3 s odsiewa tylko parę-retransmisję (0–1 s), nie tnie realnych przyrostów.
+  - Użyto event_time (czas zdarzenia Tuya), NIE time.time() — odporność na opóźnienia przetwarzania;
+    to właśnie ts ±1 s odróżnia duplikat.
+  - Nowe pole `DeadbandFilter.last_add_ele_time` (`__slots__` + init).
+- EFEKT: w bazie 1 ramka add_ele na raport. Zadziała dopiero PO RESTARCIE collectora (stan w pamięci).
+  Historyczne pary add_ele już w bazie ZOSTAJĄ — analizy danych sprzed zmiany nadal muszą deduplikować
+  przy sumowaniu.
+- TESTY: nowy `tests/test_tuya_client.py` (4 testy: duplikat ±1 s pomijany, duplikat dts=0 pomijany,
+  realne raporty ~1800 s zachowane oba, granica progu). 78/78 PASS (było 74 + 4 nowe).
+
+### Licznik — USTALONO znaczenie i skalę add_ele (2026-09-04, analiza odczytowa)
+- CEL: rozszyfrować co oznacza `add_ele` z licznika energii (ENERGY_METER_DEV_ID).
+- METODA (tylko odczyt): porównanie okno-po-oknie sumy `add_ele` z energią ZOH liczoną z
+  `cur_power` (skala ×0.1 W) w tym samym oknie czasu. Dane nocne 2026-09-03 22:00 → 2026-09-04 ~08:00
+  (postój pompy, pobór ~4 W).
+- WYNIK — `add_ele` to PRZYROST energii w Wh. Skala = ×0.001 kWh (1 jednostka = 1 Wh).
+  - Dowód globalny: ZOH/add_ele = 1.022 Wh na jednostkę (praktycznie 1:1).
+  - Suma nocna: add_ele 34 jednostki vs ZOH 34.75 Wh → zbieżność ~98%.
+  - Per okno: add_ele=2 ↔ ZOH ~1.7–2.0 Wh; add_ele=1 ↔ ZOH ~1.2–1.8 Wh (zgodne w granicach zaokrągleń).
+- KOREKTA wcześniejszej hipotezy: w decyzjach z 2026-09-02 zapisano "prawdopodobnie ×0.01 kWh" —
+  to BŁĄD. Poprawna skala to ×0.001 kWh (Wh).
+- CHARAKTER: delta (przyrost), NIE stan skumulowany. Wartości oscylują 1–2, nie rosną monotonicznie.
+- INTERWAŁ raportowania: stałe 30 min w postoju/niskim poborze. Wcześniejsze "~600 s (10 min)"
+  dotyczyło innego trybu/obciążenia — interwał nie jest stały, zależy od poboru.
+- DUPLIKATY: każda ramka `add_ele` przychodzi PODWOJONA (ten sam timestamp ±1 s, ta sama wartość) —
+  duplikat transmisji Pulsar. Collector zapisuje add_ele ZAWSZE (bypass filtra), więc w bazie leżą
+  pary. Przy SUMOWANIU trzeba DEDUPLIKOWAĆ (inaczej suma podwojona: 72 zamiast 36 za noc).
+- OGRANICZENIE: rozdzielczość 1 Wh. Przy bardzo niskim poborze (postój ~4 W → ~2 Wh/30 min) błąd
+  zaokrąglenia jest względnie duży (±0.5 Wh/okno). Pod obciążeniem (kWh/h) pomijalny.
+- IMPLIKACJA: add_ele jest potencjalnie PEWNIEJSZYM źródłem całkowitego zużycia niż ZOH z cur_power
+  (całkuje wewnętrznie licznik → brak dziur po restartach collectora). NIE zmieniano metody liczenia
+  energii — cached_meter_energy() nadal ZOH/cur_power (decyzja użytkownika). Do rozważenia w sezonie
+  grzewczym: potwierdzić skalę pod obciążeniem (add_ele dziesiątki–setki Wh/okno, bez szumu zaokrągleń)
+  i ewentualnie wpiąć add_ele jako źródło całkowitego zużycia.
+
+---
+
+## Ustalenia i zmiany — 2026-09-03
+
+### Watchdog komunikacji (2026-09-03)
+- Próg utraty komunikacji: 900s (15 minut), był 1500s (25 min).
+- Licznik energii (ENERGY_METER_DEV_ID) wyłączony z watchdoga — w postoju (0 W) Tuya nie
+  raportuje przez 1-2 h; heartbeat nie tworzy zapisów, więc cisza = normalny stan, nie utrata łączności.
+- Zmiana: `main.py`: import `ENERGY_METER_DEV_ID` + `continue` w pętli watchdoga.
+
+### Licznik — histereza cur_power + diagnoza gubionych danych (2026-09-03, sesja wieczorna)
+- OBJAW: dashboard (strona Bilans, metryka "Prąd pobrany (licznik)") pokazał dzienny pobór 2.49 kWh,
+  a zewnętrzna aplikacja licznika ~2.73 kWh. Wykres sugerował gubione ramki.
+- DIAGNOZA (tylko odczyt, bez zmiany metody obliczeń): metoda ZOH z `cur_power` jest POPRAWNA.
+  Rozbieżność wynika z BRAKU DANYCH — collector gubił ~12.9 h `cur_power` dziennie (53.9% doby),
+  46 przerw > 360s. ZOH na niepełnych danych zaniża pobór. To nie błąd wzoru, tylko dziura w telemetrii.
+- ZMIANA: `config.py` HISTERESIS_CONFIG["cur_power"] z {active:20.0, idle:20.0} (=2.0 W)
+  na {active:5.0, idle:5.0} (=0.5 W). Mniejszy próg = więcej zapisów = mniej dziur po restarcie collectora.
+  UWAGA: histereza to stan w pamięci DeadbandFilter — zmiana zadziała dopiero po RESTARCIE collectora
+  (obecne dane w bazie już zapisane, nie zmienią się). Gubione ramki to też przerwy w połączeniu Pulsar,
+  których sam próg nie usunie w 100%.
+- SKALA add_ele (obserwacja diagnostyczna, NIE wdrożone): suma przyrostów `add_ele` × 0.001 kWh (= Wh)
+  daje wyniki zbliżone do ZOH z cur_power (wczoraj: ZOH 0.99 kWh vs add_ele 2.02 kWh — add_ele wyżej,
+  bo bez dziur). add_ele jest zapisywany ZAWSZE (bypass filtra), więc nie ma przerw. Potencjalne
+  pewniejsze źródło całkowitego zużycia. NIE zmieniono cached_meter_energy() — pozostaje ZOH/cur_power
+  (decyzja użytkownika: nie zmieniać sposobu wyliczania energii). Do rozważenia w sezonie grzewczym.
+- 74/74 testy PASS po zmianie histerezy (zmiana nie dotyka logiki energii).
+
+### Zasady współpracy — dodano regułę nr 5 (2026-09-03)
+- Dodano zasadę "PROPOZYCJA PRZED IMPLEMENTACJĄ" do docs/project-decisions.md (reguła 5) ORAZ do
+  definicji agenta `.kiro/agents/tuya-dev.json` (sekcja SPOSÓB PRACY, nadrzędna nad domyślnym zachowaniem).
+- Treść: dla KAŻDEGO zadania najpierw propozycja rozwiązania i zatrzymanie; implementacja dopiero po
+  jawnym "tak". Wyjątek: operacje wyłącznie odczytowe (czytanie, SELECT, analiza) — od razu.
+
+### Kalibracja — parametry (2026-09-03)
+- Standby_power_w: baza 15 → 4.0. Pomiar licznika: pompa w postoju ~4W (obwód = tylko pompa).
+- Active_power_w: tymczasowo ustawiono 300 (maksymalne obciążenie: pompa obiegowa + wentylator max).
+  Dokładna kalibracja wymaga większej próbki (praca sprężarki z licznikiem).
+- Hidden_power_w: 0.0 (brak danych do rozdzielenia od sensor_factor w sezonie letnim).
+- Sensor_factor: 0.98, cos_phi: 0.95.
+- Priorytet: tabela `settings` (baza) > `DEFAULT_*` w `config.py`. Fallback tylko przy braku klucza.
+
+### Model kalibracji — ZOH (Zero-Order Hold)
+- Energię licznika (cur_power) całkuje się metodą lewego prostokąta (ZOH): `E = Σ (P_poprzednia × Δt)`.
+- Brak `dt_max` — długie przerwy = wartość się nie zmieniła, trwa ostatnia moc.
+- Odrzucono `add_ele` (skala niepotwierdzona).
+- Zmiana: `app/ui/helpers.py`: `cached_meter_energy()` — ZOH, `df.ffill()` po concat,
+  deduplikacja indeksu (`keep="last"`), `line_shape="hv"` w wykresie (4_Licznik.py).
+
+### UI Bilans (2026-09-03)
+- Nowa metryka: "⚡ Prąd pobrany (licznik)" — energia ZOH z `cur_power`, ten sam zakres co SCOP.
+- Nowa kolumna w tabeli "Podział energii wg trybu": "E_el licznik [kWh]" — wartość tylko w wierszu Σ Total.
+- Etykieta: `METRICS["e_el_meter"]` w `app/ui/labels.py`.
+
+### Wykres mocy (4_Licznik.py, 2026-09-03)
+- Surowe próbki zamiast resample 1min (średnia uśredniała schodki).
+- `line_shape="hv"` + `connectgaps=True` — wykres schodkowy: wartość trzyma się do kolejnego raportu.
+- Ffill po concat (dla wszystkich okresów, w tym gdy nie było danych licznika).
+- Deduplikacja timestampów (`keep="last"`) przed concat — uniknięcie "cannot reindex on duplicate labels".
+
+### Model moc pompy vs licznik
+- Pompa raportuje tylko prąd sprężarki (ac_curr).
+- Licznik mierzy całość (sprężarka + pompa obiegowa + wentylator + elektronika).
+- Różnica przy pełnym obciążeniu: ~400W — to realny pobór obwodów pomocniczych.
+- `active_power_w` = dodatek stały podczas pracy (obecnie 300W, tymczasowo, do ścisłej kalibracji).
 
 
 # Tuya Heat Pump Monitor v2 — Decyzje i Ustalenia
@@ -39,7 +201,18 @@
   - Import-check wszystkich modulow OK na 3.12. Docker lokalnie niedostepny (build tylko na Fly).
 - Token Telegram: DECYZJA 2026-09-01 — nie rotujemy, zostaje obecny token na Fly.io.
 
-## Strefa czasowa (naprawione 2026-09-01)
+## Strefa czasowa (naprawione 2026-09-01, zaktualizowane 2026-09-03)
+
+### Automatyczna obsługa DST (od 2026-09-03)
+- Funkcja `get_timezone_offset()` w `app/config.py` używa `zoneinfo` do automatycznego
+  wyliczania offsetu dla strefy `Europe/Warsaw`:
+    - Latem (CEST): +2
+    - Zimą (CET): +1
+- `SERVER_TIMEZONE_OFFSET` jest inicjalizowane przy starcie aplikacji
+- Fallback w `.env` lub `fly.toml` jest ignorowany — funkcja zawsze liczy dynamicznie
+- Brak potrzeby ręcznej zmiany przy przejściu na czas zimowy
+
+### Historyczne informacje (dla dokumentacji)
 - USTALENIE (zweryfikowane empirycznie): timestampy w bazie to epoch UTC (time.time() / Tuya ms/1000).
   Niezalezne od strefy procesu serwera. Ostatni zapis 06:41 UTC = 08:41 czasu PL (CEST).
 - KONWENCJA (jednolita): SERVER_TIMEZONE_OFFSET / time_offset_hours = offset czasu LOKALNEGO vs UTC.
@@ -56,7 +229,6 @@
     (poprawne rowniez zima CET=+1).
   - 2_Licznik reczne dodanie odczytu: wpisany czas traktowany jako lokalny -> epoch UTC (- offset).
 - Weryfikacja: raport dzienny bierze poprawna dobe (24.0h, 31.08 00:00-24:00 lokalnie), 74/74 testy PASS.
-- UWAGA: offset jest STALY (nie DST-aware). Przy zmianie czasu na zimowy ustawic "1" w fly.toml/.env.
 
 ## Kalibracja — ustalenie domyslnych parametrow (2026-09-01)
 - ANALIZA: porownano telemetrie z fizycznym licznikiem na 14 czystych parach odczytow
@@ -89,6 +261,55 @@
   Zmiana w config propaguje wszedzie PO restarcie procesu (Python wiaze defaults przy imporcie).
   Wyjatek: calibration.py CalibrationResult/apply_calibration maja 0.0/1.0 — to znaczy
   "brak wyniku kalibracji", nie domyslna wartosc aplikacji (celowo nie z config).
+- KOREKTA (2026-09-02): "jedno zrodlo prawdy" jest NIESCISLE. load_calibration() daje
+  PRIORYTET tabeli settings (baza), a DEFAULT_* z config to tylko FALLBACK gdy klucza brak
+  w bazie (kod: raw=get_setting(key,None); cal[key]=float(raw) if raw is not None else default).
+  WNIOSEK: zmiana DEFAULT_* w config NIE zadziala, jesli klucz istnieje w settings.
+  Zeby zmienic wartosc uzywana realnie -> set_setting(key, val) do bazy.
+  Dla spojnosci warto trzymac config==baza (config = wartosc startowa dla pustej instalacji).
+- ZMIANY PARAMETROW (2026-09-02, ustawione w BAZIE + zsynchronizowany config):
+  - standby_power_w: baza 15 -> 4 (pomiar licznika, obwod = tylko pompa). Config DEFAULT tez 4.
+  - active_power_w:  baza 20 -> 60. Config DEFAULT_ACTIVE_POWER_W tez 60 (byl 40).
+  Weryfikacja: load_calibration() zwraca standby=4.0, active=60.0.
+- FIX (2026-09-02): Panel.py _load_chart_data mial zahardkodowane device_id="bf874f7ae72aca1fc23op0".
+  Zamienione na import HEAT_PUMP_DEV_ID z config (jak reszta plikow). Bylo jedyne miejsce z hardkodem.
+
+## Licznik pradu Tuya — ZAMONTOWANY (2026-09-02)
+- Zamontowano inteligentny licznik pradu z odczytem zdalnym. device_id = bf215e9c483af020b12cak
+- To samo konto Tuya co pompa -> dane plyna tym samym strumieniem Pulsar (zero nowego pollingu).
+- Stala ENERGY_METER_DEV_ID w app/config.py.
+- Collector (tuya_client.py): dla tego device_id BYPASS DeadbandFilter — zapis KAZDEJ ramki
+  surowo (etap rozpoznania). Licznik zawsze przepuszczany, nawet gdy TUYA_DEVICE_IDS ogranicza.
+- database.save_properties_to_db: regula pomijania ac_vol (gdy pompa stoi) NIE dotyczy licznika.
+- Dane wspolistnieja z pompa w tabeli telemetry, rozrozniane przez device_id
+  (wszystkie SELECT filtruja po device_id — zweryfikowane).
+- KODY DP i SKALE (zaobserwowane 2026-09-02, wartosci trzymane SUROWO w bazie):
+  - cur_voltage: napiecie sieci, skala ×0.1 V  (raw 2393 -> 239.3 V)
+  - cur_current: prad, skala ×0.001 A / mA     (raw 254 -> 0.254 A prad POZORNY/RMS)
+  - cur_power:   moc CZYNNA [W], skala ×0.1 W   (raw 40 -> 4.0 W) — POTWIERDZONE przez uzytkownika
+  - add_ele:     przyrost energii (raw 1,2 co ~10 min) — skala/charakter DO USTALENIA
+    (przyrost vs total, prawdopodobnie ×0.01 kWh). Wymaga dluzszej obserwacji pod obciazeniem.
+- USTALENIE (2026-09-02): cur_power != cur_voltage × cur_current. Zweryfikowane na 33 parach:
+  V×I ~= 60 VA (moc POZORNA), a cur_power ~= 4 W (moc CZYNNA), ratio cosphi ~= 0.06.
+  cur_current to prad pozorny (RMS); licznik osobno mierzy moc czynna z cosphi.
+  NIE da sie odtworzyc cur_power z V×I — redukcja zawyzylaby pobor ~15x.
+- CZESTOTLIWOSC (zmierzone 2026-09-02, tryb surowy): ~260 rek/h, ~6200/dobe, ~2.3 mln/rok.
+  cur_power co ~29s, cur_voltage ~31s, cur_current ~39s, add_ele ~600s (10 min).
+- DECYZJA (2026-09-02): WARIANT MINIMALNY — koniec etapu rozpoznania. Collector zapisuje z licznika:
+  - cur_power: przez DeadbandFilter, HISTERESIS_CONFIG["cur_power"]={active:20,idle:20} = 2.0 W (surowo).
+    (AKTUALIZACJA 2026-09-03 wieczor: zmieniono na {active:5,idle:5} = 0.5 W — patrz wpis
+    "Licznik — histereza cur_power + diagnoza gubionych danych" powyzej.)
+  - add_ele:   ZAWSZE (bypass filtra) — inaczej powtorzone przyrosty energii zostalyby zgubione.
+  - cur_voltage, cur_current: POMIJANE w collectorze (tylko diagnostyka, nie energia).
+  Logika w tuya_client.handle_parsed_payload (whitelist per dev_id == ENERGY_METER_DEV_ID).
+- Skale aplikowac przy ODCZYCIE (jak ac_curr/flow_rate), nie przy zapisie — surowe dane zostaja.
+  UWAGA: WYJATEK to temperatury (TEMP_CODES) — te SA dzielone /10 przy ZAPISIE (round(raw/10,1)),
+  w bazie leza juz przeskalowane. Reszta liczb (ac_curr, flow_rate, ac_vol, comp_freq, cur_*)
+  trzymana SUROWO. Zweryfikowane 2026-09-02 na realnych danych: out_water_temp=28.7 (juz /10),
+  ac_curr=126 / flow_rate=50 (surowe).
+- TODO (sezon grzewczy): potwierdzic skale cur_power pod obciazeniem (pompa zima),
+  ustalic add_ele (przyrost vs total, skala), wpiac licznik jako fizyczne zrodlo
+  do kalibracji hidden_power_w + sensor_factor.
 
 ## Architektura v2
 - Jedna funkcja compute_energy() jako jedyne zrodlo prawdy dla SCOP/energii
@@ -128,6 +349,13 @@
 - pump_sta pracuje ~2min po wylaczeniu sprezarki, ale ac_curr=0 natychmiast
 - Licznik fizyczny widzi ~20 Wh/h wiecej niz telemetria
 - NIE DA SIE naprawic progami ani histereza - to ograniczenie hardware
+- AKTUALIZACJA (2026-09-02): licznik Tuya (ENERGY_METER_DEV_ID) jest na obwodzie
+  gdzie JEST TYLKO POMPA CIEPLA -> cur_power = pelny realny pobor pompy (moc czynna).
+  W standby (sprezarka OFF) licznik pokazuje ~4 W (nie 25). Zmieniono
+  DEFAULT_STANDBY_POWER_W: 25.0 -> 4.0 w config.py. To pierwszy pomiar prawdy absolutnej
+  niezaleznej od sondy. IMPLIKACJA: model liczy mniejszy pobor w postojach -> nizsza
+  E_el_standby, wyzszy SCOP total. Poprzednia kalibracja standby=25 nieaktualna.
+  TODO: przy sezonie grzewczym zweryfikowac tez active_power_w i sensor_factor wzgledem licznika.
 
 ## Model kalibracji (kluczowa decyzja)
 - E_el_real = E_el_sensor x sensor_factor + hidden_power_w x total_hours / 1000
