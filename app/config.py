@@ -142,10 +142,14 @@ HISTERESIS_CONFIG: dict = {
     "dc_fan2":        {"active": 50.0, "idle": 50.0, "last_value": None},
     "m_eev":          {"active": 5.0, "idle": 20.0, "last_value": None},
     "a_eev":          {"active": 5.0, "idle": 20.0, "last_value": None},
-    # Licznik energii (ENERGY_METER_DEV_ID). Wartości surowe; cur_power skala ×0.1 W.
+    # Licznik energii (ENERGY_METER_DEV_ID). Wartości surowe.
     # Próg 5 (surowo) = 0.5 W. Jeden próg — licznik niezależny od stanu sprężarki pompy.
     # Zmienione 2026-09-03: wcześniejsze 20.0 (2.0 W) pomijało zbyt wiele danych.
     "cur_power":      {"active": 5.0, "idle": 5.0, "last_value": None},
+    # Historia dopisana 2026-09-08: zbieranie również cur_voltage i cur_current
+    # (dla analizy rozkładu mocy).
+    "cur_voltage":    {"active": 2.0, "idle": 3.0, "last_value": None},  # V (surowe), skala ×1
+    "cur_current":    {"active": 2.0, "idle": 5.0, "last_value": None},  # mA (surowe), skala ×0.001 A
 }
 
 MAX_HEARTBEAT_SEC: int = 300

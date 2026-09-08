@@ -175,6 +175,30 @@ def inject_css() -> None:
             min-width: 0 !important;
         }
     }
+
+    /* --- Panel header: przyciski refresh i Bilans zawsze obok siebie ---
+       Nawet na telefonie, Streamlit zawijałby drugi przycisk pod spód.
+       Wymuszamy flex-wrap: nowrap i równe podziały. */
+    .st-key-pump_header [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        gap: 0.5rem !important;
+    }
+    .st-key-pump_header [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        flex: 1 1 0 !important;
+        min-width: 0 !important;
+    }
+
+    /* --- Bilans: przełącznik zakresu + info zawsze w jednym wierszu ---
+       Nawet na telefonie, Streamlit zawijałby obie kolumny pod siebie.
+       Wymuszamy flex-wrap: nowrap i równe podziały. */
+    .st-key-bilans_range [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        gap: 0.5rem !important;
+    }
+    .st-key-bilans_range [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        flex: 1 1 0 !important;
+        min-width: 0 !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -280,7 +304,7 @@ def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: s
     """Renderuje box SCOP: Total duży na górze z oznaczeniem opłacalności (próg 3.1),
     pod spodem rozbicie CO / CWU.
 
-    running=True → zielona obramówka boxu (pompa aktualnie pracuje).
+    running=True → całe tło boxu w ciepłym pomarańczu (pompa aktualnie pracuje).
     """
     co_color = STATUS_COLORS["co"]
     cwu_color = STATUS_COLORS["cwu"]
@@ -290,8 +314,13 @@ def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: s
 
     no_data = scop_co <= 0 and scop_cwu <= 0 and scop_total <= 0
 
-    # Zielona obramówka gdy pompa pracuje
-    box_border = "border:2px solid #2ECC71;box-shadow:0 0 8px rgba(46,204,113,0.4);" if running else "border:2px solid transparent;"
+    # Pompa pracuje → całe tło boxa w ciepłym, ciemnym pomarańczu (bursztyn)
+    # zamiast samej zielonej ramki (mało wyraźnej). Tło ciemne i nasycone, żeby
+    # jasny pomarańcz wartości CWU (#E67E22) i niebieski CO (#2196F3) pozostały czytelne.
+    if running:
+        box_style = "background:#3a2410;border:2px solid #E67E22;box-shadow:0 0 10px rgba(230,126,34,0.45);"
+    else:
+        box_style = "border:2px solid transparent;"
 
     # Kolor i status Total wg progu opłacalności 3.1
     if scop_total <= 0:
@@ -307,7 +336,7 @@ def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: s
     hint = '<div style="font-size:0.75rem;color:#666;margin-top:0.4rem;text-align:center;">Pompa nie pracowała w wybranym zakresie</div>' if no_data else ""
 
     st.markdown(f"""
-    <div class="scop-box" style="{box_border}">
+    <div class="scop-box" style="{box_style}">
         <div style="font-size: 0.8rem; color: #aaa; text-align:center;">{label}</div>
         <div style="text-align:center;line-height:1.1;margin:0.2rem 0 0.1rem 0;">
             <span style="font-size:2.2rem;font-weight:800;color:{total_color};">{fmt(scop_total)}</span>

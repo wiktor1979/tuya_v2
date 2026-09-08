@@ -236,14 +236,15 @@ class TuyaPulsarClient:
                 
                 filtered_status_list = []
 
-                # Licznik energii — wariant minimalny:
-                #   - add_ele  : przyrost energii, zapisywany ZAWSZE (bypass filtra,
-                #                inaczej powtórzone przyrosty zostałyby zgubione).
-                #   - cur_power: moc czynna [W], przez DeadbandFilter (histereza ~2 W).
-                #   - cur_voltage / cur_current: POMIJANE (tylko diagnostyka, nie energia).
+                # Licznik energii — zbieramy 4 parametry:
+                #   - add_ele  : przyrost energii, ZAWSZE (bypass filtra).
+                #   - cur_power: moc czynna [W], przez DeadbandFilter.
+                #   - cur_voltage: napięcie [V], przez DeadbandFilter (histereza 2/3 V).
+                #   - cur_current: prąd [mA], przez DeadbandFilter (histereza 2/5 mA).
                 if dev_id == ENERGY_METER_DEV_ID:
                     for item in status_list:
                         code = item.get("code")
+                        val = item.get("value")
                         if code == "add_ele":
                             # Deduplikacja retransmisji: Tuya wysyła każdy raport add_ele
                             # podwojony (ts ±1 s). Pomiń, jeśli od ostatniego zapisanego
@@ -254,9 +255,15 @@ class TuyaPulsarClient:
                             self.filter.last_add_ele_time = event_time
                             filtered_status_list.append(item)
                         elif code == "cur_power":
-                            if self.filter.should_save(code, item.get("value"), compressor_status):
+                            if self.filter.should_save(code, val, compressor_status):
                                 filtered_status_list.append(item)
-                        # pozostałe kody licznika ignorujemy
+                        elif code == "cur_voltage":
+                            if self.filter.should_save(code, val, compressor_status):
+                                filtered_status_list.append(item)
+                        elif code == "cur_current":
+                            if self.filter.should_save(code, val, compressor_status):
+                                filtered_status_list.append(item)
+                        # Dodatkowe kody licznika ignorujemy
                 else:
                     for item in status_list:
                         code = item.get("code")

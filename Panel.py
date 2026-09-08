@@ -112,12 +112,13 @@ def render_live():
         unsafe_allow_html=True,
     )
     with st.container(key="pump_header"):
-        refresh_txt = "odświeżanie co 1 min" if running else "odświeżanie co 5 min"
+        col_refresh, col_bilans = st.columns([1, 1])
         now_txt = datetime.now().strftime("%H:%M:%S")
-        if st.button(f"🔥 Pompa Ciepła  ·  {refresh_txt}  ·  {now_txt}",
-                     key="pump_header_btn",
-                     help="Kliknij, aby odświeżyć teraz"):
-            st.rerun()
+        with col_refresh:
+            if st.button(f"🔥 {now_txt}", key="pump_header_btn", help="Kliknij, aby odświeżyć teraz"):
+                st.rerun()
+        with col_bilans:
+            st.page_link("pages/1_Bilans.py", label="Bilans")
 
     # --- COP chwilowy (do metryki) ---
     cop_val = status.get("comp_freq", {}).get("val_num", 0) or 0

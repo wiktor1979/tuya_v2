@@ -120,6 +120,57 @@
 
 ---
 
+## Ustalenia i zmiany — 2026-09-08
+
+### UI — Panel: przycisk odświeżania i Bilans (2026-09-08)
+- ZMIANA `Panel.py` (lines ~111-120): przycisk odświeżania teraz zawiera TYLKO ikonę i godzinę (`🔥 HH:MM:SS`).
+  Usunięto tekst "Pompa Ciepła" i "odświeżanie co..." — oszczędność miejsca u góry strony.
+- ZMIANA `Panel.py`: obok przycisku odświeżania dodano przycisk "Bilans" (link do pages/1_Bilans.py).
+  Oba przyciski w jednym wierszu: `st.columns([1, 1])`.
+- ZMIANA `app/ui/styles.py`: CSS `.st-key-pump_header { flex-wrap: nowrap }` — zapobiega zawinięciu
+  przycisków w różnych wierszach na małych ekranach.
+
+### UI — Bilans: combobox z pełnym zakresem (2026-09-08)
+- ZMIANA `pages/1_Bilans.py` (lines ~30-55): combobox zakresu teraz zawiera pełną informację:
+  `📅 7 dni (01-09 — 08-09)` (bez oddzielnego podpisu `st.caption`).
+- Format dat: `dd-mm` (bez roku) — kompaktowy i czytelny.
+- ZMIANA `app/ui/styles.py`: CSS `.st-key-bilans_range { flex-wrap: nowrap }` — unika zawinięcia.
+
+### Licznik: naprawa importu (2026-09-08)
+- ZMIANA `pages/4_Licznik.py`: naprawiono import z `from db import ...` na `from app.services.database import ...`.
+  Funkcje używane: `save_manual_energy_reading`, `update_manual_energy_reading`, `delete_manual_energy_reading`.
+- Użytkownik potwierdził: strona 4_Licznik działa poprawnie.
+
+### Licznik: zbieranie napięcia i prądu (2026-09-08)
+- ZMIANA `app/config.py` HISTERESIS_CONFIG: dodano `cur_voltage` (active=2.0, idle=3.0) i `cur_current` (active=2.0, idle=5.0).
+  `cur_power` pozostaje z histerezą active=5.0, idle=5.0 (0.5 W).
+- ZMIANA `app/services/tuya_client.py` (lines ~220-260): dla `ENERGY_METER_DEV_ID` collector zbiera 4 parametry:
+  - `add_ele`: ZAWSZE (bypass filtra) — przyrost energii, skala 1 jednostka = 1 Wh.
+  - `cur_power`: przez DeadbandFilter (histereza 0.5 W).
+  - `cur_voltage`: przez DeadbandFilter (histereza 2/3 V).
+  - `cur_current`: przez DeadbandFilter (histereza 2/5 mA).
+  Dodatkowe kody licznika są ignorowane.
+- Uwaga: surowe dane są trzymane w bazie, skale aplikowane są przy odczycie (jak `ac_curr`, `flow_rate`).
+
+### Analiza: nowy moduł power_analysis.py (2026-09-08)
+- NOWY MODUŁ `app/services/power_analysis.py`: funkcja `analyze_power_breakdown()` analizuje
+  rozkład mocy ukrytej (hidden_power) na pompę obiegową i wiatrak.
+- ZAŁOŻENIA:
+  - `P_elektronika = 4W` (stały, 24/7)
+  - `P_pompa = k * flow_rate`, gdzie `k=4` (max 80W przy flow_rate=20)
+  - `P_wiatrak = P_total - P_sprzarka - P_pompa - P_elektronika`
+- UŻYCIE: `add_ele` (licznik) i `ac_curr/ac_vol/flow_rate/dc_fan1` (pompa) z tych samych okien.
+  Obliczenia energii w oknach 30-minutowych (zgodne z interwałem add_ele).
+- WYNIK: rozkład energii na sprężarkę, pompę, wiatrak i elektronikę, porównanie z licznikiem.
+  Przykład: `e_sprzarka_kwh`, `e_pompa_kwh`, `e_wiatrak_kwh`, `e_elec_kwh`, `total_e_kwh`, `add_ele_kwh`, `diff_pct`.
+- Uwaga: moduł nieaktywny bez danych zimowych (wymaga współczesnych raportów `add_ele` i parametrów pompy).
+
+### Testy i weryfikacja (2026-09-08)
+- Kompilacja wszystkich zmodyfikowanych plików: OK (`python -m py_compile`).
+- Import-check wszystkich modułów: OK.
+
+---
+
 ## Ustalenia i zmiany — 2026-09-03
 
 ### Watchdog komunikacji (2026-09-03)

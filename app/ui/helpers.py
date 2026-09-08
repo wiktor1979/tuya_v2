@@ -99,6 +99,62 @@ def cached_meter_energy(
     return wh / 1000.0  # Wh -> kWh
 
 
+@st.cache_data(ttl=60)
+def cached_meter_energy_daily(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    time_offset_hours: int = SERVER_TIMEZONE_OFFSET,
+    db_file: str = DB_FILE,
+) -> dict:
+    """Dzienne zużycie z fizycznego licznika [kWh] per doba LOKALNA.
+
+    To samo źródło i skala co cached_meter_energy (add_ele, 1 jednostka = 1 Wh),
+    tylko rozbite na doby. Grupowanie po dobie lokalnej = data(timestamp+offset).
+    Używane w tabeli dziennej (Bilans), spójne z boxem "Prąd pobrany (licznik)".
+
+    Returns:
+        Dict {data_iso 'YYYY-MM-DD': kwh}. Puste przy braku danych.
+    """
+    offset_sec = time_offset_hours * 3600
+
+    if date_from is None:
+        ts_from = 0
+    else:
+        dt = datetime.strptime(date_from, "%Y-%m-%d")
+        ts_from = int((dt - datetime(1970, 1, 1)).total_seconds()) - offset_sec
+    if date_to is None:
+        ts_to = int(datetime.now(timezone.utc).timestamp())
+    else:
+        dt_to = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+        ts_to = int((dt_to - datetime(1970, 1, 1)).total_seconds()) - offset_sec
+
+    try:
+        conn = sqlite3.connect(db_file)
+        # Doba lokalna: przesuwamy timestamp o offset i bierzemy datę (UTC epoch).
+        df = pd.read_sql_query(
+            """SELECT date(timestamp + ?, 'unixepoch') AS day,
+                      SUM(val_num) AS wh
+               FROM telemetry
+               WHERE device_id = ? AND code = 'add_ele'
+                 AND timestamp >= ? AND timestamp <= ?
+               GROUP BY day""",
+            conn, params=(offset_sec, ENERGY_METER_DEV_ID, ts_from, ts_to),
+        )
+        conn.close()
+    except Exception:
+        return {}
+
+    if df.empty:
+        return {}
+
+    # Wh -> kWh
+    return {
+        row["day"]: float(row["wh"] or 0.0) / 1000.0
+        for _, row in df.iterrows()
+        if row["day"] is not None
+    }
+
+
 def load_latest_status(db_file: str = DB_FILE, device_id: str = HEAT_PUMP_DEV_ID) -> dict:
     """Pobiera ostatni znany stan każdego parametru pompy.
 

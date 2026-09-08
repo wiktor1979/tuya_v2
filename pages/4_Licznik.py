@@ -11,7 +11,7 @@ from app.config import (
     MANUAL_METER_DEV_ID, ENERGY_METER_DEV_ID, HEAT_PUMP_DEV_ID,
     DB_FILE, SERVER_TIMEZONE_OFFSET,
 )
-from db import save_manual_energy_reading
+from app.services.database import save_manual_energy_reading, update_manual_energy_reading, delete_manual_energy_reading
 from app.ui.helpers import cached_energy
 from app.core.physics import compute_p_el_w_array
 from app.services.database import load_calibration

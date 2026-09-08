@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from app.ui.styles import inject_css, render_scop_box, STATUS_COLORS, render_about
-from app.ui.helpers import cached_energy, load_calibration, cached_meter_energy
+from app.ui.helpers import cached_energy, load_calibration, cached_meter_energy, cached_meter_energy_daily
 from app.ui.analiza_helpers import load_analiza_pivot
 from app.ui.labels import METRICS, scop_delta, e_el_help_with_standby
 from app.config import (
@@ -23,31 +23,66 @@ st.markdown('<h3 style="margin:0;padding:0.2rem 0;">⚡ Bilans i SCOP</h3>', uns
 with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
 
-    selected_range = st.selectbox("Zakres:", [
-        "Dzisiaj", "3 dni", "7 dni", "30 dni", "90 dni",
-    ], index=2)
-
     cal = load_calibration()
 
     render_about()
 
 
-# --- Obliczenie dat ---
+# --- Przełącznik zakresu (jeden wiersz, wygodny na telefonie) ---
 now = datetime.now()
-range_days_map = {"Dzisiaj": 0, "3 dni": 3, "7 dni": 7, "30 dni": 30, "90 dni": 90}
-days_back = range_days_map[selected_range]
 
-if days_back == 0:
-    date_from = now.strftime("%Y-%m-%d")
-else:
-    date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+with st.container(key="bilans_range"):
+    # Pełne etykiety z zakresem dat w comboboxie
+    today_str = now.strftime("%d-%m")
+    d3_from = (now - timedelta(days=3)).strftime("%d-%m")
+    d7_from = (now - timedelta(days=7)).strftime("%d-%m")
+    d30_from = (now - timedelta(days=30)).strftime("%d-%m")
+    d90_from = (now - timedelta(days=90)).strftime("%d-%m")
+    
+    range_labels = [
+        f"📅 Dzisiaj ({today_str})",
+        f"📅 3 dni ({d3_from} — {today_str})",
+        f"📅 7 dni ({d7_from} — {today_str})",
+        f"📅 30 dni ({d30_from} — {today_str})",
+        f"📅 90 dni ({d90_from} — {today_str})",
+    ]
+    
+    selected_idx = st.selectbox(
+        "Zakres:",
+        range_labels,
+        index=2,
+        label_visibility="collapsed"
+    )
+    
+    # Przetłumacz wybraną etykietę na liczbę dni
+    range_days_map = {"Dzisiaj": 0, "3 dni": 3, "7 dni": 7, "30 dni": 30, "90 dni": 90}
+    
+    # Wyciągnij nazwę z etykiety (np. "📅 7 dni (x — y)" → "7 dni")
+    if "Dzisiaj" in selected_idx:
+        selected_range_name = "Dzisiaj"
+    else:
+        # "📅 7 dni (obecnie — 7 dni temu)" → split(" ") → ["📅", "7", "dni", ...]
+        parts = selected_idx.split(" ")
+        if len(parts) >= 3:
+            selected_range_name = parts[1] + " " + parts[2]
+        else:
+            selected_range_name = "7 dni"
+    
+    days_back = range_days_map.get(selected_range_name, 7)
 
-# Widoczna informacja o okresie (na telefonie sidebar jest schowany)
-if days_back == 0:
-    _okres = f"📅 Okres: **Dzisiaj** ({now.strftime('%Y-%m-%d')})"
-else:
-    _okres = f"📅 Okres: **{selected_range}** ({date_from} — {now.strftime('%Y-%m-%d')})"
-st.caption(_okres)
+    # Oblicz zakres dat
+    if days_back == 0:
+        date_from = now.strftime("%Y-%m-%d")
+        date_from_display = now.strftime("%d-%m")
+        date_to_display = now.strftime("%d-%m")
+        _okres = f"📅 Dzisiaj ({date_from_display})"
+    else:
+        date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        date_from_display = date_from[8:10] + "-" + date_from[5:7]
+        date_to_display = now.strftime("%d-%m")
+        _okres = f"📅 **{selected_range_name}** ({date_from_display} — {date_to_display})"
+    
+    # Usunięto st.caption(_okres) — informacja już w comboboxie
 
 # --- Obliczenia ---
 # Jedno wywołanie (total) — SCOP CO/CWU/total liczymy przez compute_scop() z tego samego wyniku.
@@ -249,30 +284,38 @@ st.subheader("📅 Tabela dzienna")
 
 if energy.daily is not None and not energy.daily.empty:
     display = energy.daily.copy()
+
+    # Dołącz dzienne zużycie z fizycznego licznika (add_ele) — to samo źródło
+    # co box "Prąd pobrany (licznik)", tylko rozbite na doby lokalne.
+    meter_daily = cached_meter_energy_daily(date_from=date_from)
+    display["e_el_meter"] = display["date"].astype(str).map(meter_daily)
+
     display = display.rename(columns={
         "date": "Data",
-        "e_el_co": "E_el CO",
-        "e_el_cwu": "E_el CWU",
-        "e_th_co": "E_th CO",
-        "e_th_cwu": "E_th CWU",
-        "e_th_defrost": "Defrost",
+        "e_el_co": "E_el CO [kWh]",
+        "e_el_cwu": "E_el CWU [kWh]",
+        "e_el_meter": "E_el licznik [kWh]",
+        "e_th_co": "E_th CO [kWh]",
+        "e_th_cwu": "E_th CWU [kWh]",
+        "e_th_defrost": "E_th defrost [kWh]",
         "scop_nominal": "SCOP nom.",
         "scop_real": "SCOP real.",
         "hdd": "HDD",
-        "amb_temp_avg": "Śr. temp.",
+        "amb_temp_avg": "Śr. temp. zewn.",
         "comp_starts": "Starty",
         "defrost_count": "Defrosty",
         "comp_hours": "Praca [h]",
     })
 
     # Formatowanie
-    for col in ["E_el CO", "E_el CWU", "E_th CO", "E_th CWU", "HDD"]:
+    for col in ["E_el CO [kWh]", "E_el CWU [kWh]", "E_el licznik [kWh]",
+                "E_th CO [kWh]", "E_th CWU [kWh]", "HDD"]:
         if col in display.columns:
             display[col] = display[col].round(2)
-    for col in ["SCOP nom.", "SCOP real.", "Defrost"]:
+    for col in ["SCOP nom.", "SCOP real.", "E_th defrost [kWh]"]:
         if col in display.columns:
             display[col] = display[col].round(3)
-    for col in ["Śr. temp.", "Praca [h]"]:
+    for col in ["Śr. temp. zewn.", "Praca [h]"]:
         if col in display.columns:
             display[col] = display[col].round(1)
     if "Starty" in display.columns:
@@ -280,10 +323,23 @@ if energy.daily is not None and not energy.daily.empty:
     if "Defrosty" in display.columns:
         display["Defrosty"] = display["Defrosty"].astype(int)
 
+    # Jawna kolejność kolumn: prąd (z licznikiem) → ciepło → SCOP nom.
+    # → E_th defrost → SCOP real. → reszta.
+    col_order = [
+        "Data",
+        "E_el CO [kWh]", "E_el CWU [kWh]", "E_el licznik [kWh]",
+        "E_th CO [kWh]", "E_th CWU [kWh]",
+        "SCOP nom.", "E_th defrost [kWh]", "SCOP real.",
+        "HDD", "Śr. temp. zewn.", "Starty", "Defrosty", "Praca [h]",
+    ]
+    display = display[[c for c in col_order if c in display.columns]]
+
     display = display.sort_values("Data", ascending=False)
     st.dataframe(display, hide_index=True, width="stretch")
 
     st.caption(
+        "E_el = prąd (model z sondy), E_el licznik = pomiar fizyczny (add_ele). "
+        "E_th defrost = ciepło odebrane z instalacji podczas odszraniania (ujemne). "
         f"Obliczone z surowych danych (bez resample) w {energy.compute_time_ms:.0f} ms. "
         f"Próbek: {energy.sample_count:,}. Pominięte gaps: {energy.gaps_skipped}."
     )

@@ -10,3 +10,4 @@ data/*.db-*
 start_local.bat
 *.old
 data/tuya_telemetry.db.old
+/.kiro/agents
