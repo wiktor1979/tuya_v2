@@ -9,6 +9,7 @@ from app.core.physics import (
     compute_p_el_w_array,
     compute_p_th_w,
     compute_p_th_w_array,
+    is_pump_running,
 )
 
 
@@ -182,3 +183,48 @@ class TestComputeHdd:
     def test_never_negative(self) -> None:
         """HDD nigdy ujemne."""
         assert compute_hdd(30.0, 15.0) == 0.0
+
+
+
+# =============================================================================
+# is_pump_running — stan "agregat pracuje" po pompie wody (flow_rate)
+# =============================================================================
+
+class TestIsPumpRunning:
+    """Testy kanonicznego wykrywania pracy pompy po flow_rate."""
+
+    def test_running_typical_flow(self) -> None:
+        """Typowy przepływ podczas pracy (raw 15 = 1.5 m³/h) → pracuje."""
+        assert is_pump_running(15.0) is True
+
+    def test_running_low_control_flow(self) -> None:
+        """Wolny obieg kontrolny przed startem sprężarki (raw 5) → pracuje."""
+        assert is_pump_running(5.0) is True
+
+    def test_idle_zero_flow(self) -> None:
+        """Postój: brak przepływu (0) → nie pracuje."""
+        assert is_pump_running(0.0) is False
+
+    def test_none_flow(self) -> None:
+        """Brak danych (None) → nie pracuje (bezpieczny default)."""
+        assert is_pump_running(None) is False
+
+    def test_below_threshold(self) -> None:
+        """Szum poniżej progu (raw 2, próg 3) → nie pracuje."""
+        assert is_pump_running(2.0) is False
+
+    def test_exactly_at_threshold(self) -> None:
+        """Dokładnie na progu (raw 3, próg 3) → nie pracuje (ostre >)."""
+        assert is_pump_running(3.0, threshold=3.0) is False
+
+    def test_just_above_threshold(self) -> None:
+        """Tuż nad progiem (raw 3.5, próg 3) → pracuje."""
+        assert is_pump_running(3.5, threshold=3.0) is True
+
+    def test_custom_threshold(self) -> None:
+        """Własny próg: raw 8 z progiem 10 → nie pracuje."""
+        assert is_pump_running(8.0, threshold=10.0) is False
+
+    def test_invalid_type_is_safe(self) -> None:
+        """Niepoprawny typ (string) → nie pracuje (bez wyjątku)."""
+        assert is_pump_running("brak") is False  # type: ignore[arg-type]

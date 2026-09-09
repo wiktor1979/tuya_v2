@@ -3,7 +3,46 @@
 Moduł nie ma żadnych zależności od Streamlit, bazy danych ani I/O.
 Wszystkie funkcje przyjmują wartości liczbowe i zwracają wartości liczbowe.
 """
+from typing import Optional
+
 import numpy as np
+
+# Domyślny próg — zgodny z FLOW_RATE_ON_THRESHOLD w config.py.
+# Zduplikowany tutaj świadomie: physics.py to czysty core bez importu config,
+# a wywołujący (main.py, UI) mogą podać własny próg z config.
+_DEFAULT_FLOW_RATE_ON_THRESHOLD: float = 3.0
+
+
+def is_pump_running(
+    flow_rate_raw: Optional[float],
+    threshold: float = _DEFAULT_FLOW_RATE_ON_THRESHOLD,
+) -> bool:
+    """Czy pompa ciepła (agregat) PRACUJE — na podstawie pompy wody (obiegowej).
+
+    KANONICZNE źródło prawdy dla stanu "urządzenie pracuje". Używać wszędzie,
+    gdzie chodzi o to, czy pompa jest aktywna (interwał pollingu, tło UI,
+    status na żywo) — a NIE gdzie chodzi konkretnie o pracę sprężarki
+    (energia, SCOP, liczenie startów sprężarki — tam nadal comp_freq).
+
+    Dlaczego flow_rate, nie comp_freq:
+    Pompa wody rusza ~2 min PRZED sprężarką i pracuje ~2 min PO jej zatrzymaniu
+    (obieg kontrolny + dobieg/odbiór ciepła resztkowego). flow_rate obejmuje więc
+    pełny cykl pracy agregatu, a comp_freq tylko okno pracy sprężarki.
+
+    Args:
+        flow_rate_raw: Przepływ surowy z telemetrii (skala ×0.1 m³/h, tj. 25 = 2.5 m³/h).
+            None traktowane jak brak przepływu (pompa nie pracuje).
+        threshold: Próg surowy powyżej którego uznajemy pompę za pracującą.
+
+    Returns:
+        True gdy pompa wody pracuje (flow_rate_raw > threshold), inaczej False.
+    """
+    if flow_rate_raw is None:
+        return False
+    try:
+        return float(flow_rate_raw) > threshold
+    except (TypeError, ValueError):
+        return False
 
 
 def compute_p_el_w(

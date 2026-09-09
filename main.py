@@ -2,12 +2,15 @@ import time
 import threading
 from datetime import datetime, timezone
 
+from tuya_connector import TuyaOpenAPI
+
 from app.services.tuya_client import TuyaPulsarClient, MultiAccountTuyaClient, get_tuya_accounts
 from app.services.database import (
     init_db, save_properties_to_db, save_weather_data,
     log_fault, resolve_faults,
 )
 from app.services.analytics import decode_fault_bitmap
+from app.core.physics import is_pump_running
 from app.services.notifier import (
     send_fault_alert, send_fault_resolved, send_communication_lost,
     send_daily_report,
@@ -16,6 +19,7 @@ from app.config import (
     LATITUDE, LONGITUDE, LOCATION_NAME,
     TELEGRAM_ENABLED, DAILY_REPORT_HOUR, HEAT_PUMP_DEV_ID,
     SERVER_TIMEZONE_OFFSET, ENERGY_METER_DEV_ID,
+    TUYA_ACCOUNTS, FLOW_RATE_ON_THRESHOLD,
 )
 
 # Śledzenie ostatniego odbioru danych per urządzenie
@@ -23,9 +27,77 @@ _last_data_received: dict[str, float] = {}
 COMM_LOST_THRESHOLD_SEC = 900  # 15 minut bez danych = alert
 _comm_lost_alerted: set[str] = set()  # urządzenia z aktywnym alertem utraty
 
+# ... istniejące importy ...
+
+# Śledzenie stanu pompy ciepła
+_heat_pump_active = False
+# Interwały
+ENERGY_METER_POLL_INTERVAL_ACTIVE = 30   # Gdy pracuje (30 sek)
+ENERGY_METER_POLL_INTERVAL_IDLE = 300     # Gdy odpoczywa (5 min)
+
+
+def energy_meter_poll_loop(account_config: dict):
+    """Wątek inteligentnego pollingu licznika energii."""
+    # Inicjalizacja Tuya OpenAPI
+    access_id = account_config.get("access_id")
+    access_key = account_config.get("access_key")
+    
+    if not access_id or not access_key:
+        print(f"[POLL] Błąd: brak access_id/access_key w konfiguracji", flush=True)
+        return
+    
+    # Endpoint dla EU (zgodnie z tuya_client.py)
+    endpoint = "https://openapi.tuyaeu.com"
+    openapi = TuyaOpenAPI(endpoint, access_id, access_key)
+    openapi.connect()
+    
+    print(f"Uruchomiono inteligentny wątek licznika {ENERGY_METER_DEV_ID}", flush=True)
+    
+    while True:
+        try:
+            # Określ interwał na podstawie stanu pompy
+            current_interval = ENERGY_METER_POLL_INTERVAL_ACTIVE if _heat_pump_active else ENERGY_METER_POLL_INTERVAL_IDLE
+
+            # Log wysłania requestu — widoczne w logach kiedy i z jakim interwałem pytamy
+            pump_state = "PRACUJE" if _heat_pump_active else "postoj"
+            print(f"[{time.strftime('%H:%M:%S')}] [POLL] -> GET status licznika {ENERGY_METER_DEV_ID} (interwal {current_interval}s, pompa: {pump_state})", flush=True)
+
+            # Pobieraj dane tylko jeśli pompa pracuje LUB minął długi czas bezczynności
+            # (zawsze warto mieć chociaż jeden punkt na kilka minut)
+            res = openapi.get(f"/v1.0/iot-03/devices/{ENERGY_METER_DEV_ID}/status")
+
+            # Log odpowiedzi — sprawdzenie czy dane trafiają (porównanie z Pulsar)
+            if res is None:
+                print(f"[{time.strftime('%H:%M:%S')}] [POLL] <- brak odpowiedzi (None)", flush=True)
+            elif res.get("success"):
+                result = res.get("result", [])
+                # result to lista {'code': ..., 'value': ...} — wypisz w czytelnej formie
+                pairs = ", ".join(f"{it.get('code')}={it.get('value')}" for it in result) if isinstance(result, list) else str(result)
+                print(f"[{time.strftime('%H:%M:%S')}] [POLL] <- OK: {pairs}", flush=True)
+            else:
+                print(f"[{time.strftime('%H:%M:%S')}] [POLL] <- BLAD Tuya: code={res.get('code')} msg={res.get('msg')}", flush=True)
+
+            if res and not res.get("success"):
+                if res.get("code") in [1010, 1011]:
+                    openapi.connect()
+
+        except Exception as e:
+            print(f"[POLL] Błąd: {e}")
+
+        time.sleep(current_interval)
+
+
 
 def save_with_fault_detection(dev_id: str, properties: list, event_time: int = None) -> bool:
-    """Wrapper na save_properties_to_db — wykrywanie awarii + alerty Telegram."""
+    """Wrapper na save_properties_to_db — wykrywanie awarii + alerty Telegram.
+
+    Dodatkowo śledzi czy pompa PRACUJE (agregat) na podstawie pompy wody
+    (flow_rate) przez is_pump_running() — to steruje interwałem pollingu licznika.
+    Świadomie NIE po comp_freq: pompa wody rusza ~2 min przed sprężarką i pracuje
+    ~2 min po jej zatrzymaniu, więc flow_rate obejmuje pełny cykl pracy agregatu.
+    """
+    global _heat_pump_active
+
     saved = save_properties_to_db(dev_id, properties, event_time)
 
     if not event_time:
@@ -36,6 +108,17 @@ def save_with_fault_detection(dev_id: str, properties: list, event_time: int = N
     if dev_id in _comm_lost_alerted:
         _comm_lost_alerted.discard(dev_id)
         print(f"[{time.strftime('%H:%M:%S')}] Komunikacja przywrocona: {dev_id}", flush=True)
+
+    # Śledzenie czy pompa pracuje — po pompie wody (flow_rate), kanonicznie
+    if dev_id == HEAT_PUMP_DEV_ID:
+        for item in properties:
+            if item.get("code") == "flow_rate":
+                new_active = is_pump_running(item.get("value"), FLOW_RATE_ON_THRESHOLD)
+                if _heat_pump_active != new_active:
+                    status_str = "START" if new_active else "STOP"
+                    print(f"[{time.strftime('%H:%M:%S')}] Wykryto {status_str} pompy (flow_rate). Zmiana interwalu probkowania.", flush=True)
+                _heat_pump_active = new_active
+                break  # wystarczy jeden flow_rate w paczce
 
     # Sprawdź czy w tej paczce jest parametr 'fault'
     for item in properties:
@@ -183,6 +266,18 @@ def main():
     # Inicjalizacja struktury bazy danych SQLite przy starcie
     init_db()
 
+    # Pobierz skonfigurowane konta Tuya (wcześniej niż wątki)
+    accounts = get_tuya_accounts()
+    
+    if not accounts:
+        print("BLAD: Brak skonfigurowanych kont Tuya!", flush=True)
+        print("Skonfiguruj zmienne srodowiskowe:", flush=True)
+        print("  - TUYA_ACCESS_ID i TUYA_ACCESS_KEY (pojedyncze konto)", flush=True)
+        print("  - lub TUYA_ACCOUNTS_JSON (wiele kont w formacie JSON)", flush=True)
+        return
+
+    print(f"Znaleziono {len(accounts)} skonfigurowanych kont Tuya.", flush=True)
+
     if TELEGRAM_ENABLED:
         print("Powiadomienia Telegram: WLACZONE", flush=True)
     else:
@@ -200,17 +295,22 @@ def main():
     report_thread = threading.Thread(target=daily_report_loop, daemon=True)
     report_thread.start()
 
-    # Pobierz skonfigurowane konta Tuya
-    accounts = get_tuya_accounts()
-    
-    if not accounts:
-        print("BLAD: Brak skonfigurowanych kont Tuya!", flush=True)
-        print("Skonfiguruj zmienne srodowiskowe:", flush=True)
-        print("  - TUYA_ACCESS_ID i TUYA_ACCESS_KEY (pojedyncze konto)", flush=True)
-        print("  - lub TUYA_ACCOUNTS_JSON (wiele kont w formacie JSON)", flush=True)
-        return
-
-    print(f"Znaleziono {len(accounts)} skonfigurowanych kont Tuya.", flush=True)
+    # Wątek REST-owego pollingu licznika WYŁĄCZONY (2026-09-09).
+    # Powód: Cloud API zwraca 28841004 "No permissions. Your quota of Trial Edition
+    # is used up." — projekt Tuya IoT na Trial Edition wyczerpał limit/okres próbny.
+    # Dane licznika (add_ele, cur_power, cur_voltage, cur_current) i tak przychodzą
+    # przez Pulsar (potwierdzone), a wynik pollingu był porzucany — wątek tylko
+    # generował błędy. Zostawiamy funkcję energy_meter_poll_loop() na wypadek
+    # przywrócenia płatnego planu API (wtedy odkomentować blok poniżej).
+    print(f"Watek pollingu licznika {ENERGY_METER_DEV_ID}: WYLACZONY (Cloud API Trial wyczerpany; dane ida przez Pulsar).", flush=True)
+    # if accounts:
+    #     energy_thread = threading.Thread(
+    #         target=energy_meter_poll_loop,
+    #         args=(accounts[0],),
+    #         daemon=True
+    #     )
+    #     energy_thread.start()
+    #     print(f"Uruchomiono wątek pollingu licznika {ENERGY_METER_DEV_ID}", flush=True)
 
     if len(accounts) == 1:
         # Pojedyncze konto - użyj prostszego klienta

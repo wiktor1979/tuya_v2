@@ -53,6 +53,7 @@ tuya_v2/
 - **Energia liczona z surowych danych** — nigdy z próbek po resamplingu (resampling wyłącznie do wizualizacji)
 - **Jedna funkcja `compute_energy()`** — używana wszędzie (dashboard, raporty, Telegram)
 - **Jedna funkcja `compute_scop()`** — jedyne źródło wzoru SCOP (scope: total/co/cwu, kind: real/nominal); wszystkie strony i silnik jej używają, więc wyniki są spójne
+- **Wykrywanie pracy pompy po pompie wody** — `is_pump_running()` (`app/core/physics.py`, próg `flow_rate > FLOW_RATE_ON_THRESHOLD`) to jedno źródło stanu „agregat pracuje" (interwał pollingu, tło UI, status na żywo). Pompa wody rusza ~2 min przed sprężarką i pracuje ~2 min po niej, więc obejmuje pełny cykl. `comp_freq > 5` pozostaje osobno jako „sprężarka pracuje" (energia, SCOP, liczenie startów) — dwa różne pojęcia
 - **Obliczenia w kawałkach (chunked)** — dla dużych zakresów (zima: 6M+ próbek); suma daily równa się total, single vs chunked daje ten sam SCOP
 - **Brak dodatkowych tabel wyników w bazie** — wyniki obliczane na żądanie
 - **Czysty Python w rdzeniu** — `app/core/` bez zależności od Streamlit; UI i usługi mogą używać Streamlit/requests
@@ -97,9 +98,10 @@ Do obwodu pompy podłączony jest inteligentny licznik energii Tuya (odczyt zdal
 
 ## Testy
 
-83 testy pokrywające:
+92 testy pokrywające:
 
 - formuły fizyczne (COP, moc cieplna, przepływ, HDD)
+- wykrywanie pracy pompy po pompie wody (`is_pump_running()` — próg flow_rate, None/typy)
 - obliczenia energii (`compute_energy()`) i kalibrację (addytywny model, nie mnożnik)
 - wzór SCOP (`compute_scop()` — scope total/co/cwu, kind real/nominal, znak defrostu)
 - obsługę cykli rozmrażania (defrost) i filtrowanie trybów pracy

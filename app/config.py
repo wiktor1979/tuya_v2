@@ -83,6 +83,19 @@ COMP_FREQ_ON_THRESHOLD: float = 5.0
 CWU_VALVE_THRESHOLD: float = 0.5
 """Tryb CWU gdy valve >= 0.5, CO gdy < 0.5."""
 
+FLOW_RATE_ON_THRESHOLD: float = 3.0
+"""Pompa wody (obiegowa) pracuje gdy flow_rate (surowe, skala ×0.1 m³/h) > 3,
+tj. > 0.3 m³/h. To sygnał "AGREGAT PRACUJE" (nie sama sprężarka).
+
+Analiza danych (sekwencja startu/stopu CWU): pompa wody rusza ~2 min PRZED
+sprężarką i pracuje ~2 min PO jej zatrzymaniu (dobieg/odbiór ciepła).
+Podczas pracy flow_rate ~5–17 (0.5–1.7 m³/h), w postoju 0. Próg 3 (0.3 m³/h)
+odcina szum i pojedyncze zafałszowania, łapiąc też fazę wolnego obiegu kontrolnego.
+
+Różnica względem COMP_FREQ_ON_THRESHOLD: comp_freq = "sprężarka pracuje"
+(pobór energii, liczenie startów, SCOP), flow_rate = "urządzenie pracuje"
+(hydraulika aktywna) — szerszy interwał obejmujący dobieg pompy."""
+
 # --- Parametry fizyczne (domyślne) ---
 DEFAULT_COS_PHI: float = 0.95
 DEFAULT_STANDBY_POWER_W: float = 4.0

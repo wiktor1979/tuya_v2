@@ -17,9 +17,10 @@ from app.ui.helpers import (
 )
 from app.ui.labels import METRICS
 from app.config import (
-    PARAM_INFO, get_param_label, HEAT_PUMP_DEV_ID,
+    PARAM_INFO, get_param_label, HEAT_PUMP_DEV_ID, FLOW_RATE_ON_THRESHOLD,
 )
 from app.core.energy import scop_from_result, compute_energy
+from app.core.physics import is_pump_running
 
 
 # --- Konfiguracja strony ---
@@ -72,9 +73,10 @@ def render_live():
     # --- Dane na żywo ---
     status = load_latest_status()
 
-    # Czy pompa pracuje — po częstotliwości sprężarki (spójnie z silnikiem: comp_freq > 5)
-    comp_freq_now = status.get("comp_freq", {}).get("val_num", 0) or 0
-    running = comp_freq_now > 5
+    # Czy pompa pracuje — po pompie wody (flow_rate), kanonicznie przez is_pump_running.
+    # Obejmuje pełny cykl agregatu (pompa wody rusza przed sprężarką i pracuje po niej).
+    flow_rate_now = status.get("flow_rate", {}).get("val_num", 0) or 0
+    running = is_pump_running(flow_rate_now, FLOW_RATE_ON_THRESHOLD)
 
     # --- Obliczenie energii ---
     # Wołamy compute_energy() BEZPOŚREDNIO (nie cached_energy) — @st.cache_data

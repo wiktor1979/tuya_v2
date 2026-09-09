@@ -10,9 +10,11 @@ from app.config import (
     DB_FILE, ENERGY_CODES, HEAT_PUMP_DEV_ID, ENERGY_METER_DEV_ID,
     DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
     DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR, SERVER_TIMEZONE_OFFSET,
+    FLOW_RATE_ON_THRESHOLD,
 )
 from app.core.energy import compute_energy
 from app.core.models import EnergyResult
+from app.core.physics import is_pump_running
 from app.services.database import load_calibration
 
 
@@ -223,6 +225,7 @@ def get_pump_status(status: dict) -> tuple[str, str, str]:
         (label, color, emoji) — np. ("CO — Grzeje", "#2196F3", "🔥")
     """
     comp_freq = status.get("comp_freq", {}).get("val_num", 0) or 0
+    flow_rate = status.get("flow_rate", {}).get("val_num", 0) or 0
     # valve/defrost/fault sĄ zapisywane jako val_str ("True"/"False"), nie val_num!
     valve = _flag_value(status, "valve")
     defrost = _flag_value(status, "defrost")
@@ -237,6 +240,10 @@ def get_pump_status(status: dict) -> tuple[str, str, str]:
             return "CWU — Podgrzewa wodę", "#E67E22", "🚿"
         else:
             return "CO — Grzeje", "#2196F3", "🔥"
+    # Sprężarka stoi, ale pompa wody pracuje — faza obiegu kontrolnego/dobiegu
+    # (pompa wody rusza przed sprężarką i pracuje po jej zatrzymaniu).
+    if is_pump_running(flow_rate, FLOW_RATE_ON_THRESHOLD):
+        return "Obieg wody", "#8BC34A", "💧"
     return "Postój", "#555555", "⏸"
 
 

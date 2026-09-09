@@ -23,6 +23,59 @@
 
 ---
 
+## Ustalenia i zmiany — 2026-09-09
+
+### Wątek REST-owego pollingu licznika WYŁĄCZONY — Tuya Cloud API Trial wyczerpany (2026-09-09)
+- OBJAW: brak w logach jakiejkolwiek informacji o pollingu licznika. Przyczyna dwojaka:
+  (1) `energy_meter_poll_loop()` nie logował ani wysłania requestu, ani odpowiedzi — tylko błędy;
+  (2) sam poll i tak porzucał wynik `openapi.get(status)` (używany jedynie do wykrycia kodu 1010/1011).
+- DIAGNOSTYKA: dodano tymczasowo logi `[POLL] -> GET ...` (wysłanie, z interwałem i stanem pompy)
+  oraz `[POLL] <- OK/BLAD/None` (odpowiedź, rozpisane pary code=value). Log natychmiast ujawnił:
+  `code=28841004 msg=No permissions. Your quota of Trial Edition is used up.`
+- ROZPOZNANIE: projekt Tuya IoT Platform jest na **Trial Edition** i wyczerpał limit/okres próbny —
+  Cloud REST API (device status) zwraca 28841004 przy każdym zapytaniu. To ograniczenie KONTA Tuya,
+  NIE błąd kodu. Wymaga po stronie Tuya: Extend Trial lub włączenie płatnego planu / autoryzacja API.
+- POTWIERDZONO (użytkownik): **Pulsar DZIAŁA** — dane licznika (add_ele, cur_power, cur_voltage,
+  cur_current) i pompy nadal napływają strumieniem przez `save_with_fault_detection`. Pulsar (message
+  service) i Cloud REST API to osobne usługi; padło tylko REST.
+- DECYZJA: wątek pollingu licznika WYŁĄCZONY w `main()` — uruchomienie zakomentowane, funkcja
+  `energy_meter_poll_loop()` (wraz z logami diagnostycznymi) POZOSTAWIONA na wypadek przywrócenia
+  płatnego API (wtedy odkomentować blok). Przy starcie collectora log:
+  `Watek pollingu licznika ...: WYLACZONY (Cloud API Trial wyczerpany; dane ida przez Pulsar).`
+- EFEKT: znikają błędy `[POLL] <- BLAD Tuya: code=28841004` z logów. Zbieranie danych bez zmian (Pulsar).
+- Weryfikacja: `ast.parse(main.py)` OK.
+
+### Wykrywanie pracy pompy po pompie wody (flow_rate) — is_pump_running() (2026-09-09)
+- ANALIZA SEKWENCJI (odczytowa, 57 zimnych startów CWU, sierpień 2026): potwierdzono kolejność
+  startu i stopu agregatu. START: pompa wody (flow_rate) rusza ~115 s PRZED sprężarką (najpierw
+  wolny obieg kontrolny ~5–6, potem docelowy ~15–17) → wentylator (dc_fan1) ~22 s przed → sprężarka
+  (comp_freq) t=0 → valve przełącza na CWU ~8 s PO starcie sprężarki (nie na początku!).
+  STOP: sprężarka rampą w dół → 0 → wentylator zjeżdża ~35 s → valve wraca na CO ~65–110 s po →
+  pompa wody zatrzymuje się ~115 s po sprężarce (dobieg/odbiór ciepła resztkowego).
+  To zgodne z notą o `pump_sta` (pompa obiegowa pracuje ~120 s po sprężarce).
+- NOWA FUNKCJA `is_pump_running(flow_rate_raw, threshold)` w `app/core/physics.py` (czysty core,
+  bez zależności). Zwraca True gdy flow_rate_raw > threshold. Odporna na None i błędne typy.
+- NOWA STAŁA `FLOW_RATE_ON_THRESHOLD = 3.0` w `config.py` (surowe, ×0.1 m³/h → 0.3 m³/h). Odcina szum,
+  łapie fazę wolnego obiegu kontrolnego. Próg zduplikowany jako `_DEFAULT_FLOW_RATE_ON_THRESHOLD`
+  w physics.py (core nie importuje config; wołający podaje próg z config).
+- ROZRÓŻNIENIE SEMANTYCZNE (kluczowe): `flow_rate > 3` = "AGREGAT PRACUJE" (hydraulika aktywna, pełny
+  cykl); `comp_freq > 5` = "SPRĘŻARKA PRACUJE" (pobór energii, liczenie startów, SCOP). NIE zamieniano
+  comp_freq w energy.py / analytics.py / compute_scop — tam semantyka to praca sprężarki i zamiana
+  zafałszowałaby energię/SCOP (pompa wody działa ~2 min przed i po sprężarce).
+- ZASTOSOWANO is_pump_running() tam, gdzie chodzi o stan urządzenia:
+  - `main.py`: `_heat_pump_active` (steruje interwałem pollingu licznika) teraz po flow_rate.
+    PRZY OKAZJI naprawiono BŁĄD: były DWIE definicje `save_with_fault_detection` — pierwsza
+    (śledzenie stanu po comp_freq) była NADPISYWANA przez drugą, więc śledzenie `_heat_pump_active`
+    wcześniej W OGÓLE NIE DZIAŁAŁO (interwał pollingu licznika stał na IDLE). Scalono w jedną funkcję.
+  - `Panel.py`: `running` we fragmencie live (interwał odświeżania 60/300 s + tło nagłówka).
+  - `app/ui/helpers.py` `get_pump_status()`: nowy stan pośredni "💧 Obieg wody" (#8BC34A) — gdy pompa
+    wody pracuje, a sprężarka jeszcze/już stoi (faza pre-start i dobiegu). CO/CWU/Defrost/AWARIA bez zmian.
+- TESTY: `tests/test_physics.py` — nowa klasa `TestIsPumpRunning` (9 testów: przepływ typowy, obieg
+  kontrolny, postój, None, poniżej progu, granica progu, tuż nad progiem, własny próg, błędny typ).
+  92 PASS (było 83 + 9 nowych). main.py importuje się poprawnie.
+
+---
+
 ## Ustalenia i zmiany — 2026-09-04
 
 ### Operacje na produkcji Fly.io z Windows/PowerShell (2026-09-04) — POWTARZALNE
