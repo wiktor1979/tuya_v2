@@ -10,7 +10,7 @@ import pulsar
 from app.config import (
     TUYA_ACCOUNTS, PULSAR_SERVER_EU, 
     MQ_ENV_PROD, TEMP_CODES, HISTERESIS_CONFIG, MAX_HEARTBEAT_SEC,
-    ENERGY_METER_DEV_ID,
+    ENERGY_METER_DEV_ID, ENERGY_METER_DEV_IDS, HEAT_PUMP_DEV_IDS,
 )
 
 
@@ -218,10 +218,13 @@ class TuyaPulsarClient:
             event_time = int(raw_ts / 1000) if raw_ts else int(time.time())
 
             # Filtruj urządzenia jeśli lista monitorowanych jest określona.
-            # Licznik energii ZAWSZE przepuszczany, niezależnie od listy.
+            # Wszystkie skonfigurowane pompy (HEAT_PUMP_DEV_IDS) i liczniki
+            # (ENERGY_METER_DEV_IDS) ZAWSZE przepuszczane, niezależnie od TUYA_DEVICE_IDS —
+            # dzięki temu druga pompa jest zbierana nawet gdy env jej nie wymienia.
             if (self.monitored_devices
                     and dev_id not in self.monitored_devices
-                    and dev_id != ENERGY_METER_DEV_ID):
+                    and dev_id not in ENERGY_METER_DEV_IDS
+                    and dev_id not in HEAT_PUMP_DEV_IDS):
                 return  # Ignoruj urządzenia spoza listy monitorowanych
 
             if dev_id and status_list:
@@ -241,7 +244,7 @@ class TuyaPulsarClient:
                 #   - cur_power: moc czynna [W], przez DeadbandFilter.
                 #   - cur_voltage: napięcie [V], przez DeadbandFilter (histereza 2/3 V).
                 #   - cur_current: prąd [mA], przez DeadbandFilter (histereza 2/5 mA).
-                if dev_id == ENERGY_METER_DEV_ID:
+                if dev_id in ENERGY_METER_DEV_IDS:
                     for item in status_list:
                         code = item.get("code")
                         val = item.get("value")
@@ -250,6 +253,11 @@ class TuyaPulsarClient:
                             # podwojony (ts ±1 s). Pomiń, jeśli od ostatniego zapisanego
                             # add_ele minęło < ADD_ELE_DEDUP_SEC. Realne raporty dzieli
                             # ~1800 s, więc próg 3 s odsiewa tylko duplikat.
+                            # UWAGA: last_add_ele_time jest współdzielone per klient. Działa
+                            # poprawnie dla JEDNEGO licznika (obecny stan: tylko pompa1 ma licznik,
+                            # pompa2 meter_id=None). Gdyby doszedł drugi licznik → dedup trzeba
+                            # rozbić per device_id (dict), bo teraz przeplot raportów dwóch
+                            # liczników mógłby błędnie odrzucać realne przyrosty.
                             if (event_time - self.filter.last_add_ele_time) < ADD_ELE_DEDUP_SEC:
                                 continue
                             self.filter.last_add_ele_time = event_time

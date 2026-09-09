@@ -6,11 +6,11 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from app.ui.styles import inject_css, render_scop_box, STATUS_COLORS, render_about
-from app.ui.helpers import cached_energy, load_calibration, cached_meter_energy, cached_meter_energy_daily
+from app.ui.helpers import cached_energy, load_calibration, cached_meter_energy, cached_meter_energy_daily, get_selected_pump
 from app.ui.analiza_helpers import load_analiza_pivot
 from app.ui.labels import METRICS, scop_delta, e_el_help_with_standby
 from app.config import (
-    get_param_label,
+    get_param_label, list_pumps, get_pump,
 )
 from app.core.energy import scop_from_result
 
@@ -22,6 +22,27 @@ st.markdown('<h3 style="margin:0;padding:0.2rem 0;">⚡ Bilans i SCOP</h3>', uns
 # --- Sidebar ---
 with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
+
+    # --- Wybór pompy (zapamiętany w query_params: ?pump=...) ---
+    _pumps = list_pumps()
+    _pump_ids = [p["id"] for p in _pumps]
+    _pump_names = {p["id"]: p["name"] for p in _pumps}
+    _current_pump = get_selected_pump()
+    _idx = _pump_ids.index(_current_pump["id"]) if _current_pump["id"] in _pump_ids else 0
+    if len(_pumps) > 1:
+        _sel_id = st.selectbox(
+            "Pompa:", _pump_ids, index=_idx,
+            format_func=lambda pid: _pump_names.get(pid, pid),
+            key="pump_select",
+        )
+        if st.query_params.get("pump") != _sel_id:
+            st.query_params["pump"] = _sel_id
+            st.rerun()
+    else:
+        _sel_id = _current_pump["id"]
+    selected_pump = get_pump(_sel_id)
+    sel_device_id = selected_pump["device_id"]
+    sel_meter_id = selected_pump["meter_id"]
 
     cal = load_calibration()
 
@@ -87,10 +108,12 @@ with st.container(key="bilans_range"):
 # --- Obliczenia ---
 # Jedno wywołanie (total) — SCOP CO/CWU/total liczymy przez compute_scop() z tego samego wyniku.
 # Dzięki temu wszystkie SCOP są spójne i pochodzą z tych samych składowych energii.
-energy = cached_energy(date_from=date_from, daily_breakdown=True, **cal)
+energy = cached_energy(date_from=date_from, daily_breakdown=True, device_id=sel_device_id, **cal)
 
 # Energia pobrana wg fizycznego licznika (suma add_ele, ×0.001 kWh) — ten sam zakres.
-meter_kwh = cached_meter_energy(date_from=date_from)
+# Pompa bez licznika (meter_id=None) → cached_meter_energy zwraca 0.0 (brak licznika).
+has_meter = sel_meter_id is not None
+meter_kwh = cached_meter_energy(date_from=date_from, meter_id=sel_meter_id)
 
 if energy.e_el_total <= 0:
     st.info("Brak danych energetycznych w wybranym zakresie. Zmień zakres w panelu bocznym.")
@@ -139,8 +162,8 @@ with st.container(key="bilans_kpi"):
               f"{energy.e_th_defrost:.3f} kWh" if energy.e_th_defrost < 0 else "0 kWh",
               help=METRICS["e_th_defrost"]["help"])
     e4.metric(METRICS["e_el_meter"]["label"],
-              f"{meter_kwh:.2f} kWh" if meter_kwh > 0 else "—",
-              help=METRICS["e_el_meter"]["help"])
+              (f"{meter_kwh:.2f} kWh" if meter_kwh > 0 else "—") if has_meter else "brak",
+              help=METRICS["e_el_meter"]["help"] if has_meter else "Ta pompa nie ma fizycznego licznika energii.")
 
 # === Tabela podziału CO/CWU/Defrost/Total ===
 st.markdown("---")
@@ -159,7 +182,7 @@ rows.append([
     f"**{energy.e_el_total:.2f}**",
     f"**{energy.e_th_total_real:.2f}**",
     f"**{scop_total:.2f}**",
-    f"**{meter_kwh:.2f}**" if meter_kwh > 0 else "—",
+    (f"**{meter_kwh:.2f}**" if meter_kwh > 0 else "—") if has_meter else "brak",
 ])
 
 table_df = pd.DataFrame(rows, columns=["Tryb", "E_el [kWh]", "E_th [kWh]", "SCOP", "E_el licznik [kWh]"])
@@ -183,7 +206,7 @@ st.markdown("---")
 st.subheader("📈 COP chwilowy w czasie")
 
 _hours_back = days_back * 24 if days_back > 0 else 24
-cop_pivot = load_analiza_pivot(hours_back=_hours_back, cos_phi=cal["cos_phi"])
+cop_pivot = load_analiza_pivot(hours_back=_hours_back, cos_phi=cal["cos_phi"], device_id=sel_device_id)
 
 if cop_pivot is not None and not cop_pivot.empty and cop_pivot["COP"].notna().any():
     fig_cop = go.Figure()
@@ -287,7 +310,7 @@ if energy.daily is not None and not energy.daily.empty:
 
     # Dołącz dzienne zużycie z fizycznego licznika (add_ele) — to samo źródło
     # co box "Prąd pobrany (licznik)", tylko rozbite na doby lokalne.
-    meter_daily = cached_meter_energy_daily(date_from=date_from)
+    meter_daily = cached_meter_energy_daily(date_from=date_from, meter_id=sel_meter_id)
     display["e_el_meter"] = display["date"].astype(str).map(meter_daily)
 
     display = display.rename(columns={

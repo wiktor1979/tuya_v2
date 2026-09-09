@@ -25,6 +25,42 @@
 
 ## Ustalenia i zmiany — 2026-09-09
 
+### Obsługa wielu pomp ciepła (2 pompy) — wybór w UI + licznik per pompa (2026-09-09)
+- CEL: monitorować niezależnie 2 pompy ciepła (to samo konto Tuya, jeden strumień Pulsar).
+  Wybór pompy w Panelu, zapamiętany tak by przetrwał odświeżenie strony. Licznik energii
+  jest tylko dla jednej pompy → powiązany z pompą; druga pompa bez licznika.
+- MODEL DANYCH (`config.py`): pojedyncze stałe zastąpione listą `PUMPS` (dict:
+  id/name/device_id/meter_id). Helpery `get_pump(id)` (fallback: pierwsza) i `list_pumps()`.
+  Zbiory `HEAT_PUMP_DEV_IDS` i `ENERGY_METER_DEV_IDS` (frozenset, bez None) do whitelist collectora.
+  ALIASY WSTECZNE: `HEAT_PUMP_DEV_ID`/`ENERGY_METER_DEV_ID` = pierwsza pompa — utrzymują
+  kompatybilność (notifier, power_analysis, testy, domyślne argumenty funkcji).
+  pompa2: device_id = placeholder `<DEVICE_ID_2>` (DO PODMIANY), meter_id=None (bez licznika).
+- WYBÓR POMPY + TRWAŁOŚĆ: `get_selected_pump()` (helpers.py) czyta `st.query_params["pump"]`.
+  Selectbox "Pompa:" w sidebarze KAŻDEJ strony zapisuje wybór do URL (?pump=...), więc przeżywa
+  odświeżenie (F5) i przełączanie stron — BEZ nowej zależności (query_params, nie cookie).
+  Wybrano query_params zamiast biblioteki cookie: użytkownikowi chodziło o przetrwanie odświeżenia,
+  nie o trwałość między sesjami przeglądarki. Selectbox pokazuje się tylko gdy len(PUMPS) > 1.
+- PROPAGACJA device_id: wszystkie strony (Panel, 1_Bilans, 2_Analiza, 3_Porownanie, 4_Licznik)
+  przekazują wybraną pompę do compute_energy/cached_energy, load_latest_status, load_analiza_pivot,
+  _load_chart_data, load_power_comparison. cached_energy dostała parametr device_id.
+- LICZNIK PER POMPA: cached_meter_energy, cached_meter_energy_daily, database.get_remote_meter_energy,
+  load_power_comparison przyjmują meter_id. meter_id=None (pompa bez licznika) → 0.0/{}/None BEZ
+  zapytania do bazy. UI: metryka i tabela pokazują "brak", strona 4_Licznik komunikat "Pompa nie ma
+  licznika" + tylko model mocy z telemetrii. SCOP z sondy prądowej działa normalnie (niezależny od licznika).
+- COLLECTOR (`tuya_client.py`): whitelist przepuszcza WSZYSTKIE skonfigurowane pompy i liczniki
+  (HEAT_PUMP_DEV_IDS ∪ ENERGY_METER_DEV_IDS) niezależnie od TUYA_DEVICE_IDS — druga pompa zbierana
+  automatycznie. Obsługa licznika: `dev_id in ENERGY_METER_DEV_IDS` (było == pojedynczego).
+  UWAGA: dedup add_ele (last_add_ele_time) jest współdzielony per klient — poprawny dla JEDNEGO
+  licznika (obecny stan). Przy DRUGIM liczniku trzeba rozbić dedup per device_id (dict) — dodano notę w kodzie.
+- main.py: `_heat_pump_active` pozostaje stanem zbiorczym (poll REST i tak wyłączony — Trial). Do
+  dopracowania per-pompa gdy API wróci.
+- TESTY: nowy `tests/test_config.py` (10 testów: list_pumps kopia/klucze, get_pump fallback/None/pompa2
+  bez licznika, zbiory ID bez None, aliasy wsteczne, device_names). `test_database.py`: +1 test
+  (meter_id=None → None bez zapytania do bazy). Razem 105 PASS (było 92 + 13). Składnia wszystkich
+  9 zmienionych plików OK, import backendu OK.
+- DO ZROBIENIA (użytkownik): podmienić `PUMPS[1]["device_id"]` w config.py na realne device_id
+  drugiej pompy (jedno miejsce). Do tego czasu "Pompa 2" działa w UI, ale nie pokazuje danych.
+
 ### Wątek REST-owego pollingu licznika WYŁĄCZONY — Tuya Cloud API Trial wyczerpany (2026-09-09)
 - OBJAW: brak w logach jakiejkolwiek informacji o pollingu licznika. Przyczyna dwojaka:
   (1) `energy_meter_poll_loop()` nie logował ani wysłania requestu, ani odpowiedzi — tylko błędy;

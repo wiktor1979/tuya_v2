@@ -431,9 +431,11 @@ def get_current_fault_value(device_id: str) -> Optional[float]:
     return row[0] if row else None
 
 
-def get_remote_meter_energy(ts_from: int, ts_to: int) -> Optional[float]:
+def get_remote_meter_energy(
+    ts_from: int, ts_to: int, meter_id: Optional[str] = ENERGY_METER_DEV_ID
+) -> Optional[float]:
     """
-    Zużycie energii z licznika ZDALNEGO Tuya (ENERGY_METER_DEV_ID) w zakresie czasu.
+    Zużycie energii z licznika ZDALNEGO Tuya w zakresie czasu.
 
     Źródłem jest add_ele — przyrost energii. Skala potwierdzona (2026-09-04):
     1 jednostka = 1 Wh (×0.001 kWh). Zużycie = suma przyrostów w oknie.
@@ -442,17 +444,21 @@ def get_remote_meter_energy(ts_from: int, ts_to: int) -> Optional[float]:
     Args:
         ts_from: Start zakresu (epoch UTC).
         ts_to: Koniec zakresu (epoch UTC).
+        meter_id: device_id licznika dla wybranej pompy. None = pompa bez licznika → None.
 
     Returns:
-        Zużycie w kWh lub None, jeśli w oknie brak raportów add_ele.
+        Zużycie w kWh lub None, jeśli brak licznika lub w oknie brak raportów add_ele.
     """
+    if meter_id is None:
+        return None
+
     with db_cursor() as cursor:
         cursor.execute('''
             SELECT COALESCE(SUM(val_num), 0), COUNT(*)
             FROM telemetry
             WHERE device_id = ? AND code = 'add_ele'
               AND timestamp >= ? AND timestamp <= ?
-        ''', (ENERGY_METER_DEV_ID, ts_from, ts_to))
+        ''', (meter_id, ts_from, ts_to))
         row = cursor.fetchone()
 
     if not row or row[1] == 0:

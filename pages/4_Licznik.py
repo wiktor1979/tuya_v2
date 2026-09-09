@@ -10,9 +10,10 @@ from app.ui.styles import inject_css, render_about
 from app.config import (
     MANUAL_METER_DEV_ID, ENERGY_METER_DEV_ID, HEAT_PUMP_DEV_ID,
     DB_FILE, SERVER_TIMEZONE_OFFSET,
+    list_pumps, get_pump,
 )
 from app.services.database import save_manual_energy_reading, update_manual_energy_reading, delete_manual_energy_reading
-from app.ui.helpers import cached_energy
+from app.ui.helpers import cached_energy, get_selected_pump
 from app.core.physics import compute_p_el_w_array
 from app.services.database import load_calibration
 
@@ -21,7 +22,10 @@ inject_css()
 
 
 @st.cache_data(ttl=60)
-def load_power_comparison(date_from: str, date_to: str = None) -> pd.DataFrame:
+def load_power_comparison(
+    date_from: str, date_to: str = None,
+    meter_id: str = ENERGY_METER_DEV_ID, pump_device_id: str = HEAT_PUMP_DEV_ID,
+) -> pd.DataFrame:
     """Buduje dwie serie mocy [kW] do wykresu porównawczego (TYLKO wizualizacja).
 
     - Licznik: cur_power (skala ×0.1 W) -> kW. Fizyczny pomiar CAŁEJ pompy.
@@ -32,6 +36,10 @@ def load_power_comparison(date_from: str, date_to: str = None) -> pd.DataFrame:
     jak w energy._resolve_time_range (data lokalna - offset). Obie serie resamplowane
     do wspólnej siatki 1 min (średnia). Zwraca DataFrame z indeksem czasowym (lokalnym)
     i kolumnami: 'Licznik [kW]', 'Pompa (model) [kW]'. Puste serie tam, gdzie brak danych.
+
+    Args:
+        meter_id: device_id licznika. None = pompa bez licznika (seria licznika pominięta).
+        pump_device_id: device_id pompy (telemetria do modelu mocy).
     """
     off = SERVER_TIMEZONE_OFFSET
     offset_sec = off * 3600
@@ -47,19 +55,23 @@ def load_power_comparison(date_from: str, date_to: str = None) -> pd.DataFrame:
 
     try:
         conn = sqlite3.connect(DB_FILE)
-        meter = pd.read_sql_query(
-            """SELECT timestamp, val_num FROM telemetry
-               WHERE device_id = ? AND code = 'cur_power'
-                 AND timestamp >= ? AND timestamp <= ?
-               ORDER BY timestamp""",
-            conn, params=(ENERGY_METER_DEV_ID, ts_from, ts_to),
-        )
+        # Seria licznika tylko gdy pompa ma licznik.
+        if meter_id is not None:
+            meter = pd.read_sql_query(
+                """SELECT timestamp, val_num FROM telemetry
+                   WHERE device_id = ? AND code = 'cur_power'
+                     AND timestamp >= ? AND timestamp <= ?
+                   ORDER BY timestamp""",
+                conn, params=(meter_id, ts_from, ts_to),
+            )
+        else:
+            meter = pd.DataFrame()
         pump = pd.read_sql_query(
             """SELECT timestamp, code, val_num FROM telemetry
                WHERE device_id = ? AND code IN ('ac_vol','ac_curr')
                  AND timestamp >= ? AND timestamp <= ?
                ORDER BY timestamp""",
-            conn, params=(HEAT_PUMP_DEV_ID, ts_from, ts_to),
+            conn, params=(pump_device_id, ts_from, ts_to),
         )
         conn.close()
     except Exception:
@@ -120,6 +132,28 @@ def load_power_comparison(date_from: str, date_to: str = None) -> pd.DataFrame:
 
 with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
+
+    # --- Wybór pompy (zapamiętany w query_params: ?pump=...) ---
+    _pumps = list_pumps()
+    _pump_ids = [p["id"] for p in _pumps]
+    _pump_names = {p["id"]: p["name"] for p in _pumps}
+    _current_pump = get_selected_pump()
+    _idx = _pump_ids.index(_current_pump["id"]) if _current_pump["id"] in _pump_ids else 0
+    if len(_pumps) > 1:
+        _sel_id = st.selectbox(
+            "Pompa:", _pump_ids, index=_idx,
+            format_func=lambda pid: _pump_names.get(pid, pid),
+            key="pump_select",
+        )
+        if st.query_params.get("pump") != _sel_id:
+            st.query_params["pump"] = _sel_id
+            st.rerun()
+    else:
+        _sel_id = _current_pump["id"]
+    selected_pump = get_pump(_sel_id)
+    sel_device_id = selected_pump["device_id"]
+    sel_meter_id = selected_pump["meter_id"]
+
     _selected_range = st.selectbox("Zakres SCOP:", [
         "Dzisiaj", "3 dni", "7 dni", "30 dni", "90 dni",
     ], index=0)
@@ -143,13 +177,27 @@ st.caption(f"Odczyty rejestrowane pod ID: `{MANUAL_METER_DEV_ID}`")
 
 # --- Wykres porównawczy mocy: licznik vs model pompy ---
 st.subheader("📈 Moc: licznik energii vs pobór pompy")
-st.caption(
-    f"Licznik `{ENERGY_METER_DEV_ID}` (pomiar) vs model z telemetrii pompy "
-    f"`{HEAT_PUMP_DEV_ID}` (kalibracja). Zakres z panelu bocznego · surowe próbki, "
-    f"wykres schodkowy (wartość trzyma się do kolejnego raportu)."
-)
 
-df_power = load_power_comparison(date_from=_date_from, date_to=None)
+if sel_meter_id is None:
+    st.info(
+        f"Pompa **{selected_pump['name']}** nie ma fizycznego licznika energii. "
+        f"Poniżej tylko model mocy z telemetrii pompy (`{sel_device_id}`)."
+    )
+    st.caption(
+        f"Model z telemetrii pompy `{sel_device_id}` (kalibracja). "
+        f"Zakres z panelu bocznego · surowe próbki, wykres schodkowy."
+    )
+else:
+    st.caption(
+        f"Licznik `{sel_meter_id}` (pomiar) vs model z telemetrii pompy "
+        f"`{sel_device_id}` (kalibracja). Zakres z panelu bocznego · surowe próbki, "
+        f"wykres schodkowy (wartość trzyma się do kolejnego raportu)."
+    )
+
+df_power = load_power_comparison(
+    date_from=_date_from, date_to=None,
+    meter_id=sel_meter_id, pump_device_id=sel_device_id,
+)
 
 if df_power.empty:
     st.info("Brak danych mocy w wybranym zakresie.")

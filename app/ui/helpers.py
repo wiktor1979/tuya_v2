@@ -10,12 +10,28 @@ from app.config import (
     DB_FILE, ENERGY_CODES, HEAT_PUMP_DEV_ID, ENERGY_METER_DEV_ID,
     DEFAULT_COS_PHI, DEFAULT_STANDBY_POWER_W, DEFAULT_ACTIVE_POWER_W,
     DEFAULT_HIDDEN_POWER_W, DEFAULT_SENSOR_FACTOR, SERVER_TIMEZONE_OFFSET,
-    FLOW_RATE_ON_THRESHOLD,
+    FLOW_RATE_ON_THRESHOLD, get_pump, DEFAULT_PUMP_ID,
 )
 from app.core.energy import compute_energy
 from app.core.models import EnergyResult
 from app.core.physics import is_pump_running
 from app.services.database import load_calibration
+
+
+def get_selected_pump() -> dict:
+    """Zwraca wybraną pompę na podstawie query_params (?pump=...).
+
+    Wybór zapamiętany w URL (st.query_params) — przeżywa odświeżenie strony
+    i przełączanie między stronami. Fallback: pompa domyślna (DEFAULT_PUMP_ID).
+
+    Returns:
+        Dict pompy: {id, name, device_id, meter_id}.
+    """
+    try:
+        pump_id = st.query_params.get("pump", DEFAULT_PUMP_ID)
+    except Exception:
+        pump_id = DEFAULT_PUMP_ID
+    return get_pump(pump_id)
 
 
 @st.cache_data(ttl=60)
@@ -30,6 +46,7 @@ def cached_energy(
     active_power_w: float = DEFAULT_ACTIVE_POWER_W,
     hidden_power_w: float = DEFAULT_HIDDEN_POWER_W,
     sensor_factor: float = DEFAULT_SENSOR_FACTOR,
+    device_id: str = HEAT_PUMP_DEV_ID,
 ) -> EnergyResult:
     """Wrapper z cache na compute_energy(). Używany przez wszystkie strony UI.
 
@@ -46,6 +63,7 @@ def cached_energy(
         active_power_w=active_power_w,
         hidden_power_w=hidden_power_w,
         sensor_factor=sensor_factor,
+        device_id=device_id,
     )
 
 
@@ -55,6 +73,7 @@ def cached_meter_energy(
     date_to: Optional[str] = None,
     time_offset_hours: int = SERVER_TIMEZONE_OFFSET,
     db_file: str = DB_FILE,
+    meter_id: Optional[str] = ENERGY_METER_DEV_ID,
 ) -> float:
     """Energia pobrana wg fizycznego licznika [kWh] w zadanym zakresie.
 
@@ -65,8 +84,16 @@ def cached_meter_energy(
 
     Bez deduplikacji — collector deduplikuje add_ele przy zapisie, a baza jest
     już wyczyszczona z historycznych par (patrz decyzje projektowe 2026-09-04).
-    Zwraca 0.0 przy braku danych.
+
+    Args:
+        meter_id: device_id licznika dla wybranej pompy. None = pompa bez licznika
+            → zwraca 0.0 (wywołujący powinien odróżnić "brak licznika" od "0 kWh").
+
+    Zwraca 0.0 przy braku licznika lub braku danych.
     """
+    if meter_id is None:
+        return 0.0
+
     offset_sec = time_offset_hours * 3600
 
     # Data lokalna -> epoch UTC (spójnie z energy._resolve_time_range: local - offset).
@@ -87,7 +114,7 @@ def cached_meter_energy(
             """SELECT val_num FROM telemetry
                WHERE device_id = ? AND code = 'add_ele'
                  AND timestamp >= ? AND timestamp <= ?""",
-            conn, params=(ENERGY_METER_DEV_ID, ts_from, ts_to),
+            conn, params=(meter_id, ts_from, ts_to),
         )
         conn.close()
     except Exception:
@@ -107,6 +134,7 @@ def cached_meter_energy_daily(
     date_to: Optional[str] = None,
     time_offset_hours: int = SERVER_TIMEZONE_OFFSET,
     db_file: str = DB_FILE,
+    meter_id: Optional[str] = ENERGY_METER_DEV_ID,
 ) -> dict:
     """Dzienne zużycie z fizycznego licznika [kWh] per doba LOKALNA.
 
@@ -114,9 +142,15 @@ def cached_meter_energy_daily(
     tylko rozbite na doby. Grupowanie po dobie lokalnej = data(timestamp+offset).
     Używane w tabeli dziennej (Bilans), spójne z boxem "Prąd pobrany (licznik)".
 
+    Args:
+        meter_id: device_id licznika dla wybranej pompy. None = pompa bez licznika → {}.
+
     Returns:
-        Dict {data_iso 'YYYY-MM-DD': kwh}. Puste przy braku danych.
+        Dict {data_iso 'YYYY-MM-DD': kwh}. Puste przy braku licznika lub danych.
     """
+    if meter_id is None:
+        return {}
+
     offset_sec = time_offset_hours * 3600
 
     if date_from is None:
@@ -140,7 +174,7 @@ def cached_meter_energy_daily(
                WHERE device_id = ? AND code = 'add_ele'
                  AND timestamp >= ? AND timestamp <= ?
                GROUP BY day""",
-            conn, params=(offset_sec, ENERGY_METER_DEV_ID, ts_from, ts_to),
+            conn, params=(offset_sec, meter_id, ts_from, ts_to),
         )
         conn.close()
     except Exception:

@@ -1,7 +1,7 @@
 """Konfiguracja projektu tuya_v2 — stałe i parametry domyślne."""
 import os
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # --- Tuya Pulsar (collector) ---
 TUYA_ACCOUNTS: List[Dict[str, Any]] = []
@@ -32,20 +32,75 @@ PULSAR_SERVER_EU = "pulsar+ssl://mqe.tuyaeu.com:7285/"
 # --- Baza danych ---
 DB_FILE: str = os.environ.get("DB_FILE", "./data/tuya_telemetry.db")
 
-# --- Urządzenia ---
-HEAT_PUMP_DEV_ID: str = "bf874f7ae72aca1fc23op0"
+# --- Urządzenia / pompy ciepła ---
+# Lista monitorowanych pomp. Każda pompa: własne device_id (telemetria) i opcjonalny
+# meter_id (fizyczny licznik energii Tuya). Druga pompa nie ma licznika → meter_id=None.
+# Wszystkie na TYM SAMYM koncie Tuya (jeden strumień Pulsar).
+PUMPS: list[dict] = [
+    {
+        "id": "pompa1",
+        "name": "Pompa 1",
+        "device_id": "bf874f7ae72aca1fc23op0",
+        "meter_id": "bf215e9c483af020b12cak",
+    },
+    {
+        "id": "pompa2",
+        "name": "Pompa 2",
+        "device_id": "<DEVICE_ID_2>",  # TODO: wpisać realne device_id drugiej pompy
+        "meter_id": None,               # druga pompa BEZ licznika energii
+    },
+]
+"""Konfiguracja monitorowanych pomp. Nazwa i id stałe (nieedytowalne w UI)."""
+
+DEFAULT_PUMP_ID: str = PUMPS[0]["id"]
+"""Domyślna pompa (gdy brak wyboru w query_params)."""
+
+
+def list_pumps() -> list[dict]:
+    """Zwraca listę skonfigurowanych pomp (kopia, by nie modyfikować oryginału)."""
+    return [dict(p) for p in PUMPS]
+
+
+def get_pump(pump_id: Optional[str]) -> dict:
+    """Zwraca konfigurację pompy po jej 'id'. Fallback: pompa domyślna (pierwsza).
+
+    Args:
+        pump_id: Identyfikator pompy ('id' z PUMPS) lub None.
+
+    Returns:
+        Dict pompy: {id, name, device_id, meter_id}.
+    """
+    if pump_id:
+        for p in PUMPS:
+            if p["id"] == pump_id:
+                return dict(p)
+    return dict(PUMPS[0])
+
+
+# Aliasy wsteczne — pierwsza pompa. Utrzymują kompatybilność z kodem/testami,
+# które importują pojedyncze stałe (notifier, power_analysis, testy, domyślne argumenty).
+HEAT_PUMP_DEV_ID: str = PUMPS[0]["device_id"]
 MANUAL_METER_DEV_ID: str = "licznikRęczny"
-ENERGY_METER_DEV_ID: str = "bf215e9c483af020b12cak"
-"""Inteligentny licznik prądu z odczytem zdalnym (Tuya, to samo konto co pompa).
-Na etapie rozpoznania zapisujemy WSZYSTKIE parametry z tego urządzenia
-surowo (bypass DeadbandFilter), żeby zobaczyć jakie kody DP przesyła."""
+ENERGY_METER_DEV_ID: str = PUMPS[0]["meter_id"]
+"""Inteligentny licznik prądu (Tuya, to samo konto co pompa) — alias pierwszej pompy.
+Uwaga: wielo-pompowo używać ENERGY_METER_DEV_IDS (zbiór wszystkich liczników)."""
+
+# Zbiór wszystkich device_id liczników (do whitelist/obsługi w collectorze).
+ENERGY_METER_DEV_IDS: frozenset[str] = frozenset(
+    p["meter_id"] for p in PUMPS if p["meter_id"]
+)
+"""Wszystkie device_id liczników energii (pomijając pompy bez licznika)."""
+
+# Zbiór wszystkich device_id pomp (telemetria) — do whitelist collectora.
+HEAT_PUMP_DEV_IDS: frozenset[str] = frozenset(p["device_id"] for p in PUMPS)
 
 # Czytelne nazwy urządzeń — używane w powiadomieniach Telegram i UI zamiast device_id.
-DEVICE_NAMES: dict[str, str] = {
-    HEAT_PUMP_DEV_ID: "Pompa",
-    ENERGY_METER_DEV_ID: "Licznik",
-    MANUAL_METER_DEV_ID: "Licznik ręczny",
-}
+DEVICE_NAMES: dict[str, str] = {}
+for _p in PUMPS:
+    DEVICE_NAMES[_p["device_id"]] = _p["name"]
+    if _p["meter_id"]:
+        DEVICE_NAMES[_p["meter_id"]] = f"Licznik {_p['name']}"
+DEVICE_NAMES[MANUAL_METER_DEV_ID] = "Licznik ręczny"
 
 
 def get_device_name(device_id: str) -> str:

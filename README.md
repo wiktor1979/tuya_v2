@@ -26,7 +26,7 @@ tuya_v2/
 │   ├── 4_Licznik.py         — licznik energii (wykres mocy, ręczne odczyty)
 │   └── 5_Wiedza.py          — baza wiedzy
 ├── app/
-│   ├── config.py            — stałe, progi, parametry czujników, get_timezone_offset() (DST)
+│   ├── config.py            — stałe, progi, parametry czujników, lista PUMPS, get_timezone_offset() (DST)
 │   ├── core/                — czysty Python, bez zależności od Streamlit
 │   │   ├── physics.py       — formuły fizyczne (P_el, P_th, COP, HDD)
 │   │   ├── energy.py        — compute_energy() + compute_scop() (kanoniczne źródła prawdy)
@@ -54,6 +54,7 @@ tuya_v2/
 - **Jedna funkcja `compute_energy()`** — używana wszędzie (dashboard, raporty, Telegram)
 - **Jedna funkcja `compute_scop()`** — jedyne źródło wzoru SCOP (scope: total/co/cwu, kind: real/nominal); wszystkie strony i silnik jej używają, więc wyniki są spójne
 - **Wykrywanie pracy pompy po pompie wody** — `is_pump_running()` (`app/core/physics.py`, próg `flow_rate > FLOW_RATE_ON_THRESHOLD`) to jedno źródło stanu „agregat pracuje" (interwał pollingu, tło UI, status na żywo). Pompa wody rusza ~2 min przed sprężarką i pracuje ~2 min po niej, więc obejmuje pełny cykl. `comp_freq > 5` pozostaje osobno jako „sprężarka pracuje" (energia, SCOP, liczenie startów) — dwa różne pojęcia
+- **Obsługa wielu pomp** — lista `PUMPS` w `config.py` (id/name/device_id/meter_id); wybór pompy w sidebarze zapamiętany w `st.query_params` (`?pump=`, przeżywa odświeżenie). Licznik energii powiązany z pompą (`meter_id`) — pompa bez licznika (`meter_id=None`) pokazuje „brak", SCOP z sondy prądowej działa normalnie. Wszystkie funkcje odczytu przyjmują `device_id`/`meter_id`
 - **Obliczenia w kawałkach (chunked)** — dla dużych zakresów (zima: 6M+ próbek); suma daily równa się total, single vs chunked daje ten sam SCOP
 - **Brak dodatkowych tabel wyników w bazie** — wyniki obliczane na żądanie
 - **Czysty Python w rdzeniu** — `app/core/` bez zależności od Streamlit; UI i usługi mogą używać Streamlit/requests
@@ -98,10 +99,11 @@ Do obwodu pompy podłączony jest inteligentny licznik energii Tuya (odczyt zdal
 
 ## Testy
 
-92 testy pokrywające:
+105 testów pokrywających:
 
 - formuły fizyczne (COP, moc cieplna, przepływ, HDD)
 - wykrywanie pracy pompy po pompie wody (`is_pump_running()` — próg flow_rate, None/typy)
+- obsługę wielu pomp (`get_pump`/`list_pumps`, zbiory device_id, pompa bez licznika)
 - obliczenia energii (`compute_energy()`) i kalibrację (addytywny model, nie mnożnik)
 - wzór SCOP (`compute_scop()` — scope total/co/cwu, kind real/nominal, znak defrostu)
 - obsługę cykli rozmrażania (defrost) i filtrowanie trybów pracy

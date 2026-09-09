@@ -14,10 +14,12 @@ from app.ui.helpers import (
     get_pump_status,
     get_temp_value,
     load_calibration,
+    get_selected_pump,
 )
 from app.ui.labels import METRICS
 from app.config import (
     PARAM_INFO, get_param_label, HEAT_PUMP_DEV_ID, FLOW_RATE_ON_THRESHOLD,
+    list_pumps, get_pump,
 )
 from app.core.energy import scop_from_result, compute_energy
 from app.core.physics import is_pump_running
@@ -35,6 +37,30 @@ inject_css()
 # --- Sidebar ---
 with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
+
+    # --- Wybór pompy (zapamiętany w query_params: ?pump=...) ---
+    _pumps = list_pumps()
+    _pump_ids = [p["id"] for p in _pumps]
+    _pump_names = {p["id"]: p["name"] for p in _pumps}
+    _current_pump = get_selected_pump()
+    _idx = _pump_ids.index(_current_pump["id"]) if _current_pump["id"] in _pump_ids else 0
+
+    if len(_pumps) > 1:
+        _sel_id = st.selectbox(
+            "Pompa:", _pump_ids, index=_idx,
+            format_func=lambda pid: _pump_names.get(pid, pid),
+            key="pump_select",
+        )
+        # Zapamiętaj wybór w URL — przeżywa odświeżenie i przełączanie stron.
+        if st.query_params.get("pump") != _sel_id:
+            st.query_params["pump"] = _sel_id
+            st.rerun()
+    else:
+        _sel_id = _current_pump["id"]
+
+    selected_pump = get_pump(_sel_id)
+    sel_device_id = selected_pump["device_id"]
+    sel_meter_id = selected_pump["meter_id"]
 
     selected_range = st.selectbox("Zakres SCOP:", [
         "Dzisiaj", "3 dni", "7 dni", "30 dni", "90 dni",
@@ -58,7 +84,7 @@ date_to = None
 
 
 # --- Adaptacyjny interwał auto-refresh (jak v1) ---
-_status_probe = load_latest_status()
+_status_probe = load_latest_status(device_id=sel_device_id)
 _pump_running = get_pump_status(_status_probe)[0] not in ("Postój", "AWARIA")
 _refresh_sec = 60 if _pump_running else 300
 
@@ -71,7 +97,7 @@ def render_live():
     nagłówek, wykres parametrów (własny cache/multiselect).
     """
     # --- Dane na żywo ---
-    status = load_latest_status()
+    status = load_latest_status(device_id=sel_device_id)
 
     # Czy pompa pracuje — po pompie wody (flow_rate), kanonicznie przez is_pump_running.
     # Obejmuje pełny cykl agregatu (pompa wody rusza przed sprężarką i pracuje po niej).
@@ -83,7 +109,7 @@ def render_live():
     # wewnątrz @st.fragment miewa problem z serializacją zwrotu (EnergyResult).
     # We fragmencie odświeżanym co 60s cache i tak nie daje korzyści.
     # SCOP CO/CWU/total liczymy przez compute_scop() z tego samego wyniku.
-    energy = compute_energy(date_from=date_from, date_to=date_to, **cal_params)
+    energy = compute_energy(date_from=date_from, date_to=date_to, device_id=sel_device_id, **cal_params)
 
     scop_total = scop_from_result(energy, scope="total", kind="real")
     scop_co = scop_from_result(energy, scope="co", kind="real")
@@ -117,7 +143,7 @@ def render_live():
         col_refresh, col_bilans = st.columns([1, 1])
         now_txt = datetime.now().strftime("%H:%M:%S")
         with col_refresh:
-            if st.button(f"🔥 {now_txt}", key="pump_header_btn", help="Kliknij, aby odświeżyć teraz"):
+            if st.button(f"🔥 {selected_pump['name']} · {now_txt}", key="pump_header_btn", help="Kliknij, aby odświeżyć teraz"):
                 st.rerun()
         with col_bilans:
             st.page_link("pages/1_Bilans.py", label="Bilans")
@@ -215,7 +241,7 @@ def _load_chart_data(date_from: str, device_id: str = HEAT_PUMP_DEV_ID) -> pd.Da
         return pd.DataFrame()
 
 
-chart_df = _load_chart_data(date_from)
+chart_df = _load_chart_data(date_from, device_id=sel_device_id)
 if not chart_df.empty:
     all_codes = chart_df["code"].unique().tolist()
     default_temps = [c for c in ["tank_temp", "in_water_temp", "out_water_temp", "heat_temp_set", "amb_temp"]

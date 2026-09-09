@@ -33,3 +33,12 @@ class TestGetRemoteMeterEnergy:
         with mock.patch.object(database, "db_cursor", lambda: _cursor_returning((0.0, 3))):
             result = database.get_remote_meter_energy(0, 1_000_000)
         assert result == 0.0
+
+    def test_none_meter_id_returns_none_without_query(self) -> None:
+        """Pompa bez licznika (meter_id=None) → None, bez zapytania do bazy."""
+        # db_cursor podniósłby wyjątek, gdyby został użyty — dowód, że nie pytamy bazy.
+        def _boom():
+            raise AssertionError("db_cursor nie powinno być wywołane dla meter_id=None")
+        with mock.patch.object(database, "db_cursor", _boom):
+            result = database.get_remote_meter_energy(0, 1_000_000, meter_id=None)
+        assert result is None
