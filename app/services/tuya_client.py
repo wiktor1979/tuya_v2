@@ -27,8 +27,16 @@ def get_tuya_accounts() -> List[Dict[str, Any]]:
 
 
 class DeadbandFilter:
-    """Filtr deadband dla telemetrii - obsługa dynamicznej histerezy."""
-    
+    """Filtr deadband dla telemetrii - obsługa dynamicznej histerezy.
+
+    Stan (ostatnia zapisana wartość/czas) jest trzymany PER (device_id, code).
+    Klucz musi zawierać device_id, bo jeden klient Pulsar obsługuje wiele urządzeń
+    (np. dwie pompy) o TYCH SAMYCH kodach (out_water_temp itd.), ale różnych
+    wartościach. Wspólny klucz po samym `code` powodował, że ramki różnych pomp
+    wzajemnie nadpisywały last_saved_val i każda przechodziła próg histerezy
+    (regresja przy dodaniu drugiej pompy — ~200× za dużo zapisów temperatur).
+    """
+
     __slots__ = ['last_saved_val', 'last_saved_time', 'last_add_ele_time']
 
     # Parametry bez heartbeatu — zapisywane TYLKO gdy wartość się zmieni.
@@ -39,39 +47,47 @@ class DeadbandFilter:
     })
     
     def __init__(self):
-        self.last_saved_val: Dict[str, Any] = {}
-        self.last_saved_time: Dict[str, float] = {}
-        # Czas zdarzenia (event_time z ramki) ostatnio zapisanego add_ele.
+        # Klucz: (device_id, code) — stan niezależny per urządzenie.
+        self.last_saved_val: Dict[tuple, Any] = {}
+        self.last_saved_time: Dict[tuple, float] = {}
+        # Czas zdarzenia (event_time z ramki) ostatnio zapisanego add_ele, PER device_id.
         # Służy deduplikacji podwojonych ramek add_ele (retransmisja Tuya, ts ±1 s).
-        self.last_add_ele_time: float = 0.0
+        # Dict (nie pojedyncza wartość), bo różne liczniki mają niezależne strumienie —
+        # przeplot raportów dwóch liczników nie może błędnie odrzucać realnych przyrostów.
+        self.last_add_ele_time: Dict[str, float] = {}
     
-    def should_save(self, code: str, new_val: Any, compressor_status: int = 0) -> bool:
+    def should_save(self, dev_id: str, code: str, new_val: Any, compressor_status: int = 0) -> bool:
         """
         Decyduje, czy dana wartość parametru powinna zostać zapisana do bazy.
         Używa dynamicznej histerezy zależnej od statusu sprężarki.
-        
+
+        Stan jest trzymany PER (dev_id, code) — dwa urządzenia o tym samym kodzie
+        nie zakłócają sobie nawzajem histerezy.
+
         Args:
+            dev_id: ID urządzenia (klucz stanu razem z code).
             code: Nazwa parametru (kod z Tuya).
             new_val: Nowa odczytana wartość.
             compressor_status: Status sprężarki (0 = idle, >0 = active).
         """
         now = time.time()
-        
-        # 1. Pierwszy odczyt w historii -> zapisz
-        if code not in self.last_saved_val:
-            self.last_saved_val[code] = new_val
-            self.last_saved_time[code] = now
+        key = (dev_id, code)
+
+        # 1. Pierwszy odczyt w historii (dla tego urządzenia+kodu) -> zapisz
+        if key not in self.last_saved_val:
+            self.last_saved_val[key] = new_val
+            self.last_saved_time[key] = now
             return True
         
         # 2. Heartbeat: upłynęło 5 minut od ostatniego zapisu tego parametru -> zapisz
         #    WYJĄTEK: flagi binarne i rzadko zmieniające się stany — bez heartbeatu
         if code not in self.NO_HEARTBEAT_CODES:
-            if (now - self.last_saved_time[code]) >= MAX_HEARTBEAT_SEC:
-                self.last_saved_val[code] = new_val
-                self.last_saved_time[code] = now
+            if (now - self.last_saved_time[key]) >= MAX_HEARTBEAT_SEC:
+                self.last_saved_val[key] = new_val
+                self.last_saved_time[key] = now
                 return True
 
-        old_val = self.last_saved_val[code]
+        old_val = self.last_saved_val[key]
 
         # 3. BARDZO WAŻNE: Jeśli wartość jest DOKŁADNIE taka sama -> IGNORUJ
         if new_val == old_val:
@@ -95,8 +111,8 @@ class DeadbandFilter:
                     return False
 
         # 5. Jeśli wartość się zmieniła i przeszła próg -> ZAPISZ
-        self.last_saved_val[code] = new_val
-        self.last_saved_time[code] = now
+        self.last_saved_val[key] = new_val
+        self.last_saved_time[key] = now
         return True
 
 
@@ -253,23 +269,22 @@ class TuyaPulsarClient:
                             # podwojony (ts ±1 s). Pomiń, jeśli od ostatniego zapisanego
                             # add_ele minęło < ADD_ELE_DEDUP_SEC. Realne raporty dzieli
                             # ~1800 s, więc próg 3 s odsiewa tylko duplikat.
-                            # UWAGA: last_add_ele_time jest współdzielone per klient. Działa
-                            # poprawnie dla JEDNEGO licznika (obecny stan: tylko pompa1 ma licznik,
-                            # pompa2 meter_id=None). Gdyby doszedł drugi licznik → dedup trzeba
-                            # rozbić per device_id (dict), bo teraz przeplot raportów dwóch
-                            # liczników mógłby błędnie odrzucać realne przyrosty.
-                            if (event_time - self.filter.last_add_ele_time) < ADD_ELE_DEDUP_SEC:
+                            # Stan PER device_id (dict) — każdy licznik ma niezależny
+                            # strumień, przeplot raportów dwóch liczników nie może
+                            # błędnie odrzucać realnych przyrostów.
+                            last_ae = self.filter.last_add_ele_time.get(dev_id, 0.0)
+                            if (event_time - last_ae) < ADD_ELE_DEDUP_SEC:
                                 continue
-                            self.filter.last_add_ele_time = event_time
+                            self.filter.last_add_ele_time[dev_id] = event_time
                             filtered_status_list.append(item)
                         elif code == "cur_power":
-                            if self.filter.should_save(code, val, compressor_status):
+                            if self.filter.should_save(dev_id, code, val, compressor_status):
                                 filtered_status_list.append(item)
                         elif code == "cur_voltage":
-                            if self.filter.should_save(code, val, compressor_status):
+                            if self.filter.should_save(dev_id, code, val, compressor_status):
                                 filtered_status_list.append(item)
                         elif code == "cur_current":
-                            if self.filter.should_save(code, val, compressor_status):
+                            if self.filter.should_save(dev_id, code, val, compressor_status):
                                 filtered_status_list.append(item)
                         # Dodatkowe kody licznika ignorujemy
                 else:
@@ -282,7 +297,7 @@ class TuyaPulsarClient:
                         if code in TEMP_CODES and isinstance(val, (int, float)) and not isinstance(val, bool):
                             check_val = val / 10.0
 
-                        if self.filter.should_save(code, check_val, compressor_status):
+                        if self.filter.should_save(dev_id, code, check_val, compressor_status):
                             filtered_status_list.append(item)
 
                 if filtered_status_list:

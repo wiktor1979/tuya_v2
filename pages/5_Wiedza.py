@@ -121,7 +121,8 @@ with st.expander("🔀 Flagi binarne i tryby pracy", expanded=False):
 
 | Parametr | Opis |
 |----------|------|
-| `valve` | Zawór 3-drożny: **True = CWU**, False = CO |
+| `work_mode` | Tryb pracy: `heat`=CO, `hot_water`=CWU, `heat_hot_water`=CO+CWU. **Źródło podziału CO/CWU.** |
+| `valve` | Zawór **4-drożny** (rewers grzanie/chłodzenie) — koreluje ze sprężarką, NIE rozróżnia CO/CWU |
 | `defrost` | Cykl odszraniania parownika |
 | `pump_sta` | Status pompy obiegowej (pracuje ~2 min po wyłączeniu sprężarki) |
 | `fault_flag` | Flaga awarii |

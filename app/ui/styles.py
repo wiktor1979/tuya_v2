@@ -1,5 +1,6 @@
 """Style CSS, kolory statusu pompy, PARAM_INFO."""
 import streamlit as st
+from typing import Optional
 
 from app.config import PARAM_INFO
 
@@ -300,11 +301,17 @@ def render_temp_bar_setpoint(
 
 
 def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: str = "SCOP",
-                    running: bool = False) -> None:
+                    running: bool = False, active_mode: Optional[str] = None,
+                    show_cwu: bool = True) -> None:
     """Renderuje box SCOP: Total duży na górze z oznaczeniem opłacalności (próg 3.1),
     pod spodem rozbicie CO / CWU.
 
     running=True → całe tło boxu w ciepłym pomarańczu (pompa aktualnie pracuje).
+    active_mode ('co'/'cwu'/None) → co pompa grzeje TERAZ: podświetla i pogrubia
+        sekcję CO albo CWU (druga przygaszona) + pokazuje badge „Teraz grzeje".
+        None → bez podświetlenia (postój / obieg wody / defrost).
+    show_cwu=False → pompa NIE obsługuje CWU: ukrywa cały dolny wiersz rozbicia
+        CO/CWU i badge CWU. Zostaje tylko jedna wartość SCOP (Total = CO).
     """
     co_color = STATUS_COLORS["co"]
     cwu_color = STATUS_COLORS["cwu"]
@@ -335,26 +342,75 @@ def render_scop_box(scop_co: float, scop_cwu: float, scop_total: float, label: s
 
     hint = '<div style="font-size:0.75rem;color:#666;margin-top:0.4rem;text-align:center;">Pompa nie pracowała w wybranym zakresie</div>' if no_data else ""
 
-    st.markdown(f"""
-    <div class="scop-box" style="{box_style}">
-        <div style="font-size: 0.8rem; color: #aaa; text-align:center;">{label}</div>
-        <div style="text-align:center;line-height:1.1;margin:0.2rem 0 0.1rem 0;">
-            <span style="font-size:2.2rem;font-weight:800;color:{total_color};">{fmt(scop_total)}</span>
-        </div>
-        <div style="text-align:center;margin-bottom:0.5rem;">{status_txt}</div>
-        <div style="display:flex;justify-content:space-around;border-top:1px solid #333;padding-top:0.5rem;">
-            <div style="text-align:center;">
-                <div style="font-size:0.75rem;color:#aaa;">🏠 CO</div>
-                <div style="font-size:1.2rem;font-weight:700;color:{co_color};">{fmt(scop_co)}</div>
-            </div>
-            <div style="text-align:center;">
-                <div style="font-size:0.75rem;color:#aaa;">🚿 CWU</div>
-                <div style="font-size:1.2rem;font-weight:700;color:{cwu_color};">{fmt(scop_cwu)}</div>
-            </div>
-        </div>
-        {hint}
-    </div>
-    """, unsafe_allow_html=True)
+    # Pompa bez CWU → tylko jedna wartość SCOP (Total). Ukrywamy dolny wiersz
+    # rozbicia CO/CWU i wszelkie akcenty CWU.
+    # UWAGA: HTML bez wiodących wcięć — wcięte linie (≥4 spacje) po pustej linii
+    # Markdown traktuje jako blok kodu i renderuje surowy HTML zamiast go interpretować.
+    if not show_cwu:
+        st.markdown(
+            f'<div class="scop-box" style="{box_style}">'
+            f'<div style="font-size:0.8rem;color:#aaa;text-align:center;">{label}</div>'
+            f'<div style="text-align:center;line-height:1.1;margin:0.2rem 0 0.1rem 0;">'
+            f'<span style="font-size:2.2rem;font-weight:800;color:{total_color};">{fmt(scop_total)}</span></div>'
+            f'<div style="text-align:center;margin-bottom:0.2rem;">{status_txt}</div>'
+            f'{hint}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    # Badge „Teraz grzeje" + wyróżnienie aktywnej sekcji (CO/CWU).
+    # Sekcja aktywna: pełny kolor + pogrubienie + tło/ramka; nieaktywna przygaszona.
+    co_active = active_mode == "co"
+    cwu_active = active_mode == "cwu"
+
+    def _section_style(active: bool, color: str) -> tuple[str, str, str]:
+        """Zwraca (styl wrappera, kolor tytułu, kolor wartości) dla sekcji CO/CWU."""
+        if active_mode is None:
+            return "", "#aaa", color  # brak grzania → neutralnie (jak dotychczas)
+        if active:
+            wrap = (f"background:rgba(255,255,255,0.04);border:1.5px solid {color};"
+                    f"border-radius:8px;padding:0.2rem 0.6rem;")
+            return wrap, color, color
+        # nieaktywna sekcja — przygaszona
+        return "padding:0.2rem 0.6rem;opacity:0.45;", "#888", "#888"
+
+    co_wrap, co_title_c, co_val_c = _section_style(co_active, co_color)
+    cwu_wrap, cwu_title_c, cwu_val_c = _section_style(cwu_active, cwu_color)
+    co_weight = "800" if co_active else "700"
+    cwu_weight = "800" if cwu_active else "700"
+
+    if active_mode == "co":
+        badge = (f'<div style="text-align:center;margin-bottom:0.4rem;">'
+                 f'<span style="background:{co_color};color:#fff;font-size:0.8rem;font-weight:700;'
+                 f'padding:0.15rem 0.6rem;border-radius:999px;">🔥 Teraz grzeje: CO</span></div>')
+    elif active_mode == "cwu":
+        badge = (f'<div style="text-align:center;margin-bottom:0.4rem;">'
+                 f'<span style="background:{cwu_color};color:#fff;font-size:0.8rem;font-weight:700;'
+                 f'padding:0.15rem 0.6rem;border-radius:999px;">🚿 Teraz grzeje: CWU</span></div>')
+    else:
+        badge = ""
+
+    st.markdown(
+        f'<div class="scop-box" style="{box_style}">'
+        f'<div style="font-size:0.8rem;color:#aaa;text-align:center;">{label}</div>'
+        f'<div style="text-align:center;line-height:1.1;margin:0.2rem 0 0.1rem 0;">'
+        f'<span style="font-size:2.2rem;font-weight:800;color:{total_color};">{fmt(scop_total)}</span></div>'
+        f'<div style="text-align:center;margin-bottom:0.5rem;">{status_txt}</div>'
+        f'{badge}'
+        f'<div style="display:flex;justify-content:space-around;align-items:center;'
+        f'border-top:1px solid #333;padding-top:0.5rem;gap:0.5rem;">'
+        f'<div style="text-align:center;{co_wrap}">'
+        f'<div style="font-size:0.75rem;color:{co_title_c};">🏠 CO</div>'
+        f'<div style="font-size:1.2rem;font-weight:{co_weight};color:{co_val_c};">{fmt(scop_co)}</div></div>'
+        f'<div style="text-align:center;{cwu_wrap}">'
+        f'<div style="font-size:0.75rem;color:{cwu_title_c};">🚿 CWU</div>'
+        f'<div style="font-size:1.2rem;font-weight:{cwu_weight};color:{cwu_val_c};">{fmt(scop_cwu)}</div></div>'
+        f'</div>'
+        f'{hint}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 
 

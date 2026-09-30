@@ -23,7 +23,177 @@
 
 ---
 
+## Ustalenia i zmiany — 2026-09-27
+
+### HDD liczony z danych pogodowych, nie z czujnika amb_temp (2026-09-27)
+- OBJAW: HDD na Bilansie znacząco różny dla pompa1 (Wiktor, od południa) i pompa2
+  (Karol, od północy), mimo lokalizacji 500 m od siebie. HDD zależy tylko od temp.
+  zewnętrznej → powinien być ~identyczny.
+- DIAGNOZA (odczyt bazy, ostatnie 2 dni — wcześniejsze dane niewiarygodne):
+  czujnik amb_temp jednostki P1 pokazuje STALE ~1.3–1.5°C więcej niż P2, także NOCĄ
+  (noc 22-07: P1 12.07 vs P2 10.80, dP=+1.27; dzień 10-17: P1 18.19 vs P2 16.67, dP=+1.52).
+  Skoro różnica utrzymuje się w nocy (bez słońca), to NIE efekt nasłonecznienia, lecz
+  STAŁY OFFSET czujnika (kalibracja/mikrolokalizacja montażu). Słońce dokłada tylko ~0.2°C.
+  KRYTYCZNE dla HDD: temperatury krążą wokół progu bazowego 15°C — P1 avg ~15.5 (nad progiem
+  → HDD≈0), P2 avg ~14.1 (pod progiem → HDD≈0.8–1.0). Mały offset = skrajnie różny HDD.
+- DECYZJA (user): liczyć HDD z DANYCH POGODOWYCH (Open-Meteo, weather_data.temperature) —
+  wspólne źródło dla obu pomp → HDD identyczny i porównywalny, niezależny od czujnika.
+  Parametry: A) baza HDD 15°C (bez zmian), B) zwykła średnia dobowa (dane ~co 1 h, równomierne),
+  C) fallback na amb_temp czujnika gdy dla dnia brak danych pogodowych.
+- IMPLEMENTACJA:
+  - `database.get_weather_daily_avg(ts_from, ts_to, offset)`: średnia dobowa temperature
+    z weather_data, grupowana po dniu LOKALNYM (epoch+offset), zwraca {date -> °C}.
+  - `energy.compute_energy(..., weather_daily: Optional[dict])`: nowy param wstrzykiwany
+    (rdzeń NIE importuje bazy — zasada „core bez I/O"). `_compute_from_pivot` i
+    `_compute_chunked` przekazują dalej. HDD dnia przez `_hdd_for_day`: pogoda gdy dzień
+    w weather_daily, inaczej fallback na średnią amb_temp dnia. weather_daily=None →
+    zachowanie jak dotąd (kompatybilność). amb_temp czujnika zostaje jako amb_temp_avg.
+  - Dostawcy pogody: `helpers.weather_daily_for_range()` (→ cached_energy → Bilans i in.),
+    `Panel.py` (wywołanie bezpośrednie compute_energy we fragmencie live),
+    `notifier.build_daily_report()` (raport Telegram — spójność z dashboardem).
+    Konwersja dat→epoch wg konwencji projektu (bez datetime.timestamp(); UTC = lokalny − offset).
+- TESTY: `tests/test_hdd_weather.py` (6: HDD z pogody vs amb, fallback bez pogody, fallback
+  dnia spoza pogody; get_weather_daily_avg mapowanie/pusty/NULL). 146 PASS (było 140 + 6).
+- WDROŻENIE: zmiana w silniku + dashboard + notifier → produkcja po redeployu (zgoda user).
+
+### Panel — pompa BEZ obsługi CWU (druga pompa: tylko CO) (2026-09-27)
+- KONFIGURACJA: instalacja ma 2 pompy o RÓŻNEJ konfiguracji — pompa1 (Wiktor) grzeje
+  CO i CWU, pompa2 (Karol) grzeje TYLKO CO (brak zasobnika/czujnika CWU).
+- ROZRÓŻNIENIE (odczytowa analiza bazy): sygnałem „brak CWU" jest UJEMNA `tank_temp`
+  (czujnik zasobnika rozwarty/niepodłączony → raportuje stałe -30°C, surowo -300).
+  P2: tank_temp = -30.0 dla 30993/30993 odczytów; P1: 19.7–50.5, 0 ujemnych/51912.
+  UWAGA: to NIE `hot_water_temp_set` jest ujemne (u OBU pomp = 45) — użytkownik
+  wskazał „temp. zadana CWU", ale dane pokazały że rozróżnia dopiero tank_temp.
+  Próg: tank_temp < 0 → brak CWU (decyzja user: próg 0).
+- ROZWIĄZANIE (wyłącznie UI, rdzeń/silnik nietknięty, bez nowych zależności):
+  - NOWY helper `pump_supports_cwu(status)` w `app/ui/helpers.py`: False gdy tank_temp<0,
+    True gdy >=0 lub brak danych (bezpieczny default — nie ukrywa istniejącej funkcji).
+  - `render_scop_box()` (`app/ui/styles.py`): nowy param `show_cwu` (domyślnie True).
+    show_cwu=False → USUWA cały dolny wiersz rozbicia CO/CWU i akcenty CWU; zostaje
+    JEDNA wartość SCOP (Total). Domyślnie True → bez zmian dla pompy z CWU.
+  - `Panel.py`: wyznacza `has_cwu = pump_supports_cwu(status)`, przekazuje show_cwu do
+    kafelka SCOP i renderuje pasek temperatury CWU TYLKO gdy has_cwu.
+- FIX PRZY OKAZJI (surowy HTML na kafelku SCOP): render_scop_box budował HTML f-stringiem
+  z WCIĘCIAMI (8 spacji). Gdy active_mode=None (badge=""), powstawała pusta linia + wcięte
+  linie <div> → Markdown traktował to jako BLOK KODU i wyświetlał surowy HTML zamiast go
+  renderować. NAPRAWA: oba st.markdown w render_scop_box przepisane na HTML BEZ wiodących
+  wcięć (linie sklejane od kolumny 0). Zasada: HTML w st.markdown(unsafe_allow_html=True)
+  nie może mieć wcięć ≥4 spacje po pustej linii.
+- TESTY: tests/test_live_heating_mode.py — TestPumpSupportsCwu (4: ujemny→False,
+  dodatni/zero→True, brak danych→True). 140 PASS (było 136 + 4).
+- WDROŻENIE: zmiana w dashboardzie → produkcja po redeployu (zgoda user).
+
+### Panel — wizualizacja „co pompa grzeje TERAZ" (CO/CWU) na kafelku SCOP (2026-09-27)
+- CEL (użytkownik): na Panelu widać, co jest grzane gdy pompa pracuje (CO vs CWU) —
+  akcent na kafelku SCOP „dzisiaj" (kolor/pogrubienie CO lub CWU).
+- ROZWIĄZANIE (wyłącznie warstwa UI, rdzeń/silnik nietknięty, bez nowych zależności):
+  - NOWY helper `get_live_heating_mode(status)` w `app/ui/helpers.py`: zwraca
+    'co'/'cwu'/None. None gdy sprężarka stoi (comp_freq ≤ próg) — obieg wody/postój/
+    defrost/awaria. Klasyfikacja CO/CWU przez ISTNIEJĄCE `_live_is_cwu()` (to samo
+    źródło prawdy co silnik `_classify_cwu_mask` i `get_pump_status`) — spójność.
+  - `render_scop_box()` (`app/ui/styles.py`): nowy param `active_mode` ('co'/'cwu'/None).
+    Badge „🔥 Teraz grzeje: CO" / „🚿 Teraz grzeje: CWU" w kolorze trybu; aktywna sekcja
+    (CO albo CWU) pogrubiona + pełny kolor + ramka/tło, nieaktywna przygaszona (opacity).
+    active_mode=None → wygląd jak dotychczas (neutralny). Dodano import `Optional`.
+  - `Panel.py`: wyznacza `active_mode = get_live_heating_mode(status)`, przekazuje do
+    render_scop_box; dodatkowo podświetla NAGŁÓWEK aktywnego paska temperatur
+    („🔥 CO · grzeje" / „🚿 CWU · grzeje", pogrubione, w kolorze trybu) — label pasków
+    to HTML (unsafe_allow_html), więc wystarczyło wzbogacić tekst labela.
+- SEMANTYKA: tryb pokazywany TYLKO gdy sprężarka realnie grzeje. Faza obiegu wody
+  (pompa wody ON, sprężarka OFF) → brak badge (nic nie jest aktywnie grzane) — spójne
+  z rozróżnieniem flow_rate="agregat pracuje" vs comp_freq="sprężarka grzeje".
+- TESTY: nowy `tests/test_live_heating_mode.py` (6: sprężarka off→None, heat→co,
+  hot_water→cwu, tryb łączony zimny/ciepły zasobnik, nieznany work_mode→co). 136 PASS
+  (było 130 + 6). Kompilacja Panel.py/styles.py/helpers.py OK.
+- WDROŻENIE: zmiana w dashboardzie (nie collector) → produkcja po redeployu (zgoda user).
+
+### Raport Telegram — per pompa, bez licznika (2026-09-27)
+- OBJAW: użytkownik dostawał 3× ten sam raport dzienny (identyczny SCOP/energia),
+  w tym raport dla licznika energii (bez sensu).
+- PRZYCZYNA A (identyczny raport): build_daily_report(device_id) w notifier.py używał
+  device_id tylko do nazwy i fault_history, a compute_energy() wołał BEZ device_id
+  (liczył zawsze pompę domyślną) i get_remote_meter_energy() BEZ meter_id (licznik pompy 1).
+- PRZYCZYNA B (raport dla licznika): daily_report_loop() w main.py iterował po
+  _last_data_received (wszystkie urządzenia, w tym ENERGY_METER_DEV_ID).
+- NAPRAWA:
+  - notifier.build_daily_report(): wyznacza meter_id po device_id z list_pumps(),
+    przekazuje device_id do compute_energy() i meter_id do get_remote_meter_energy().
+  - main.daily_report_loop(): iteruje po list_pumps() (tylko pompy), nie po
+    _last_data_received. Pompa bez danych za wczoraj → build_daily_report zwraca None
+    (nie wysyła). Usunięto osobne send_daily_report(HEAT_PUMP_DEV_ID) + pętlę po urządzeniach.
+- TESTY: tests/test_notifier.py — TestPerPumpReport (device_id → compute_energy,
+  meter_id → get_remote_meter_energy, None dla pompy bez licznika). 2 nowe testy.
+- WDROŻENIE: zmiana w collectorze (main.py) → działa na produkcji po redeployu (zgoda user).
+
+### DeadbandFilter — stan per (device_id, code), nie per code (2026-09-27)
+- OBJAW: w logach temperatury (back_temp, in_water_temp, out_water_temp, tank_temp,
+  disc_temp) zapisywane co ~4 s dla OBU pomp mimo postoju sprężarki. ~5200 rek/h per pompa,
+  temperatury po 885/h każda (comp_freq tylko 8/h).
+- PRZYCZYNA: DeadbandFilter.should_save() kluczował stan (last_saved_val/last_saved_time)
+  po samym `code`. Jeden klient Pulsar = jeden filtr obsługuje obie pompy o TYCH SAMYCH
+  kodach, ale różnych wartościach (pompa1 out_water ~29.7, pompa2 ~21.8). Przeplot ramek
+  → wzajemne nadpisywanie last_saved_val → każda ramka przechodziła próg. Regresja przy
+  dodaniu drugiej pompy (wcześniej 1 urządzenie, klucz=code wystarczał).
+- DIAGNOZA (odczyt bazy, przeplot obu pomp wg czasu, out_water_temp, 1 h):
+  wspólny filtr (klucz=code) przepuszcza 1536/1770; filtr per device 8/1770.
+- NAPRAWA (tuya_client.py):
+  - should_save(dev_id, code, new_val, compressor_status) — stan po kluczu (dev_id, code).
+  - last_add_ele_time: pojedyncza wartość → dict[dev_id -> float] (dedup add_ele per licznik;
+    zamyka wcześniejszą notę „przy drugim liczniku rozbić dedup per device_id").
+  - 4 wywołania should_save w handle_parsed_payload dostały dev_id.
+- EFEKT: temperatury filtrowane niezależnie per pompa. Spodziewany spadek zapisów
+  z ~5200/h do ~50–100/h per pompa. Działa po RESTARCIE collectora (stan w pamięci);
+  dane historyczne w bazie zostają.
+- TESTY: tests/test_tuya_client.py — TestDeadbandPerDevice (przeplot 2 urządzeń → 1 zapis
+  każde; niezależność stanu), TestAddEleDedupPerDevice. Razem 130 PASS (było 127 + 3).
+- WDROŻENIE: zmiana w collectorze → produkcja po redeployu (zgoda user).
+
+---
+
 ## Ustalenia i zmiany — 2026-09-09
+
+### Wybór pompy trwały między sesjami przeglądarki — localStorage (2026-09-09)
+- OBJAW: po dodaniu 2 pomp wybór pompy wracał na "Pompa 1" przy przełączaniu stron. Dodatkowo
+  wymóg użytkownika: wybór ma przetrwać ZAMKNIĘCIE i ponowne otwarcie przeglądarki, przy czym
+  DWIE różne osoby monitorują tę samą instalację na RÓŻNYCH sprzętach JEDNOCZEŚNIE.
+- PRZYCZYNA: mechanizm oparty wyłącznie na `st.query_params` (?pump=). Natywna nawigacja
+  Streamlita między stronami (menu sidebara / page_link) gubi query param z URL → nowa strona
+  czytała pusto i wracała do DEFAULT_PUMP_ID. URL sam w sobie i tak nie przetrwa zamknięcia
+  przeglądarki.
+- DECYZJA (wybór użytkownika: "zaimplementuj lepsze"): trwałość PER PRZEGLĄDARKA/URZĄDZENIE.
+  Wykluczono zapis globalny do bazy (tabela settings) — dwie osoby przełączałyby sobie nawzajem
+  pompę. Wybrano localStorage (biblioteka `streamlit-local-storage==0.0.25`) zamiast cookie:
+  localStorage jest czysto kliencki (nie leci na serwer przy każdym żądaniu), a serwer tej
+  wartości nie potrzebuje. To ODWRÓCENIE wcześniejszej decyzji z tej samej sekcji ("query_params
+  zamiast cookie/biblioteki") — bo zmienił się wymóg (przetrwanie zamknięcia przeglądarki + wiele
+  osób, nie tylko F5).
+- MECHANIZM (3 warstwy, kolejność ODCZYTU w `get_selected_pump()`): 1) `st.query_params` (F5,
+  współdzielenie linku); 2) `st.session_state` klucz `_selected_pump_id` (nawigacja między
+  stronami w sesji — osobny klucz, NIE klucz widgetu `pump_select`, bo ten bywa resetowany per
+  strona); 3) localStorage klucz `tuya_selected_pump` (przetrwanie zamknięcia przeglądarki, per
+  urządzenie); 4) fallback DEFAULT_PUMP_ID. Po ustaleniu wyboru synchronizacja WSTECZ do
+  session_state + URL (żeby kolejne strony miały skąd czytać). Do localStorage zapis TYLKO przy
+  realnym wyborze użytkownika (`persist_pump_choice`), NIE w get_selected_pump — inaczej można by
+  nadpisać wartość, zanim komponent LS zdąży ją wczytać (odczyt LS jest asynchroniczny z JS).
+- HELPERS (`app/ui/helpers.py`): nowe `persist_pump_choice(pid)` (zapis do 3 warstw),
+  `render_pump_selector()` (wspólny selectbox w sidebarze — USUWA duplikację identycznego bloku
+  z 5 stron i centralizuje logikę trwałości), `_get_local_storage()` (leniwy singleton w
+  session_state; import `streamlit_local_storage` LOKALNY w funkcji — rdzeń/testy nie wymagają
+  pakietu; zwraca None gdy komponent niedostępny → graceful fallback), `_valid_pump_id()`
+  (walidacja że id istnieje w PUMPS, inaczej fallback).
+- STRONY: Panel, 1_Bilans, 2_Analiza, 3_Porownanie, 4_Licznik — powtórzony blok selectboxa
+  zastąpiony jednym wywołaniem `render_pump_selector()` (zwraca dict wybranej pompy). Importy
+  `get_pump`/`list_pumps`/`get_selected_pump` w stronach pozostały (nieużywane, nieszkodliwe —
+  czystka poza zakresem tej naprawy).
+- ZALEŻNOŚĆ: `streamlit-local-storage==0.0.25` w `requirements.txt` (warstwa UI; rdzeń nadal
+  czysty pandas+numpy). API: `getItem(key)`, `setItem(itemKey, itemValue, key=...)`.
+- UWAGA DEPLOY: nowa zależność UI → działa na produkcji (Fly.io) DOPIERO po redeployu
+  (wymaga wyraźnej zgody użytkownika — nie deployowano).
+- TESTY: nowy `tests/test_helpers_pump.py` (8 testów: priorytety query_params > session_state >
+  localStorage > default; walidacja błędnego id; synchronizacja wstecz; zapis do 3 warstw;
+  symulacja zamknięcia przeglądarki = URL/session puste, localStorage trwa). st i localStorage
+  podmieniane atrapami (FakeSt/FakeLS) — testują czystą logikę priorytetów bez runtime Streamlita.
+  113 PASS (było 105 + 8). Kompilacja 6 zmienionych plików OK.
 
 ### Obsługa wielu pomp ciepła (2 pompy) — wybór w UI + licznik per pompa (2026-09-09)
 - CEL: monitorować niezależnie 2 pompy ciepła (to samo konto Tuya, jeden strumień Pulsar).
@@ -294,8 +464,8 @@
 
 ### Kalibracja — parametry (2026-09-03)
 - Standby_power_w: baza 15 → 4.0. Pomiar licznika: pompa w postoju ~4W (obwód = tylko pompa).
-- Active_power_w: tymczasowo ustawiono 300 (maksymalne obciążenie: pompa obiegowa + wentylator max).
-  Dokładna kalibracja wymaga większej próbki (praca sprężarki z licznikiem).
+- Active_power_w: 300 (maksymalne obciążenie: pompa obiegowa + wentylator max + elektronika).
+  Wartość potwierdzona (2026-09-11) jako realny dodatkowy pobór podczas pracy agregatu.
 - Hidden_power_w: 0.0 (brak danych do rozdzielenia od sensor_factor w sezonie letnim).
 - Sensor_factor: 0.98, cos_phi: 0.95.
 - Priorytet: tabela `settings` (baza) > `DEFAULT_*` w `config.py`. Fallback tylko przy braku klucza.
@@ -322,7 +492,7 @@
 - Pompa raportuje tylko prąd sprężarki (ac_curr).
 - Licznik mierzy całość (sprężarka + pompa obiegowa + wentylator + elektronika).
 - Różnica przy pełnym obciążeniu: ~400W — to realny pobór obwodów pomocniczych.
-- `active_power_w` = dodatek stały podczas pracy (obecnie 300W, tymczasowo, do ścisłej kalibracji).
+- `active_power_w` = dodatek stały podczas pracy (300W — pompa obiegowa + wentylator + elektronika, potwierdzone 2026-09-11).
 
 
 # Tuya Heat Pump Monitor v2 — Decyzje i Ustalenia
@@ -424,8 +594,9 @@
   Dla spojnosci warto trzymac config==baza (config = wartosc startowa dla pustej instalacji).
 - ZMIANY PARAMETROW (2026-09-02, ustawione w BAZIE + zsynchronizowany config):
   - standby_power_w: baza 15 -> 4 (pomiar licznika, obwod = tylko pompa). Config DEFAULT tez 4.
-  - active_power_w:  baza 20 -> 60. Config DEFAULT_ACTIVE_POWER_W tez 60 (byl 40).
-  Weryfikacja: load_calibration() zwraca standby=4.0, active=60.0.
+  - active_power_w:  baza 20 -> 60 (2026-09-02), później -> 300 (2026-09-11: realny pobór
+    pompa obiegowa + wentylator + elektronika). Config DEFAULT_ACTIVE_POWER_W zsynchronizowany na 300.
+  Weryfikacja: load_calibration() zwraca standby=4.0, active=300.0.
 - FIX (2026-09-02): Panel.py _load_chart_data mial zahardkodowane device_id="bf874f7ae72aca1fc23op0".
   Zamienione na import HEAT_PUMP_DEV_ID z config (jak reszta plikow). Bylo jedyne miejsce z hardkodem.
 

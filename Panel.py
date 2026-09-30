@@ -12,17 +12,25 @@ from app.ui.styles import inject_css, render_status_badge, render_temp_bar, rend
 from app.ui.helpers import (
     load_latest_status,
     get_pump_status,
+    get_pump_activity,
+    PUMP_ACTIVITY_COLORS,
+    PUMP_ACTIVITY_HEATING,
+    PUMP_ACTIVITY_RUNNING,
+    PUMP_ACTIVITY_OFF,
     get_temp_value,
     load_calibration,
     get_selected_pump,
+    render_pump_selector,
+    get_live_heating_mode,
+    pump_supports_cwu,
+    weather_daily_for_range,
 )
 from app.ui.labels import METRICS
 from app.config import (
-    PARAM_INFO, get_param_label, HEAT_PUMP_DEV_ID, FLOW_RATE_ON_THRESHOLD,
+    PARAM_INFO, get_param_label, HEAT_PUMP_DEV_ID,
     list_pumps, get_pump,
 )
 from app.core.energy import scop_from_result, compute_energy
-from app.core.physics import is_pump_running
 
 
 # --- Konfiguracja strony ---
@@ -38,27 +46,9 @@ inject_css()
 with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
 
-    # --- Wybór pompy (zapamiętany w query_params: ?pump=...) ---
-    _pumps = list_pumps()
-    _pump_ids = [p["id"] for p in _pumps]
-    _pump_names = {p["id"]: p["name"] for p in _pumps}
-    _current_pump = get_selected_pump()
-    _idx = _pump_ids.index(_current_pump["id"]) if _current_pump["id"] in _pump_ids else 0
-
-    if len(_pumps) > 1:
-        _sel_id = st.selectbox(
-            "Pompa:", _pump_ids, index=_idx,
-            format_func=lambda pid: _pump_names.get(pid, pid),
-            key="pump_select",
-        )
-        # Zapamiętaj wybór w URL — przeżywa odświeżenie i przełączanie stron.
-        if st.query_params.get("pump") != _sel_id:
-            st.query_params["pump"] = _sel_id
-            st.rerun()
-    else:
-        _sel_id = _current_pump["id"]
-
-    selected_pump = get_pump(_sel_id)
+    # --- Wybór pompy (trwały: URL + session_state + localStorage przeglądarki) ---
+    selected_pump = render_pump_selector()
+    _sel_id = selected_pump["id"]
     sel_device_id = selected_pump["device_id"]
     sel_meter_id = selected_pump["meter_id"]
 
@@ -84,9 +74,10 @@ date_to = None
 
 
 # --- Adaptacyjny interwał auto-refresh (jak v1) ---
+# Aktywny (grzeje LUB pompa wody pracuje) → 60s, postój → 300s.
 _status_probe = load_latest_status(device_id=sel_device_id)
-_pump_running = get_pump_status(_status_probe)[0] not in ("Postój", "AWARIA")
-_refresh_sec = 60 if _pump_running else 300
+_pump_active = get_pump_activity(_status_probe) != PUMP_ACTIVITY_OFF
+_refresh_sec = 60 if _pump_active else 300
 
 
 @st.fragment(run_every=_refresh_sec)
@@ -99,26 +90,42 @@ def render_live():
     # --- Dane na żywo ---
     status = load_latest_status(device_id=sel_device_id)
 
-    # Czy pompa pracuje — po pompie wody (flow_rate), kanonicznie przez is_pump_running.
-    # Obejmuje pełny cykl agregatu (pompa wody rusza przed sprężarką i pracuje po niej).
-    flow_rate_now = status.get("flow_rate", {}).get("val_num", 0) or 0
-    running = is_pump_running(flow_rate_now, FLOW_RATE_ON_THRESHOLD)
+    # Stan agregatu — 3 stany (kanonicznie przez get_pump_activity):
+    #   heating = grzeje (sprężarka ON), running = działa (pompa wody ON), off = nie działa.
+    activity = get_pump_activity(status)
+    running = activity != PUMP_ACTIVITY_OFF  # „pompa pracuje" (heating lub running)
+
+    # Co pompa grzeje TERAZ: 'co'/'cwu'/None (None = obieg wody/postój/defrost).
+    # Steruje podświetleniem sekcji CO/CWU w kafelku SCOP i nagłówków pasków temperatur.
+    active_mode = get_live_heating_mode(status)
+
+    # Czy pompa obsługuje CWU (czujnik zasobnika podłączony — tank_temp >= 0).
+    # Pompa bez CWU (tank_temp < 0) → ukrywamy pasek CWU i rozbicie CWU na kafelku SCOP.
+    has_cwu = pump_supports_cwu(status)
 
     # --- Obliczenie energii ---
     # Wołamy compute_energy() BEZPOŚREDNIO (nie cached_energy) — @st.cache_data
     # wewnątrz @st.fragment miewa problem z serializacją zwrotu (EnergyResult).
     # We fragmencie odświeżanym co 60s cache i tak nie daje korzyści.
     # SCOP CO/CWU/total liczymy przez compute_scop() z tego samego wyniku.
-    energy = compute_energy(date_from=date_from, date_to=date_to, device_id=sel_device_id, **cal_params)
+    from app.config import SERVER_TIMEZONE_OFFSET as _tz
+    _weather_daily = weather_daily_for_range(date_from, date_to, _tz)
+    energy = compute_energy(date_from=date_from, date_to=date_to, device_id=sel_device_id,
+                            weather_daily=_weather_daily, **cal_params)
 
     scop_total = scop_from_result(energy, scope="total", kind="real")
     scop_co = scop_from_result(energy, scope="co", kind="real")
     scop_cwu = scop_from_result(energy, scope="cwu", kind="real")
 
-    # --- Header jako PRZYCISK odświeżania; tło sygnalizuje stan pompy ---
-    # Pracuje → ciepłe pomarańczowo-czerwone tło (ogień), postój → szare.
-    if running:
+    # --- Header jako PRZYCISK odświeżania; tło sygnalizuje stan pompy (3 stany) ---
+    #   grzeje (sprężarka ON) → pomarańczowo-czerwony (ogień),
+    #   działa (pompa wody ON, sprężarka OFF) → zielony,
+    #   nie działa → szary.
+    if activity == PUMP_ACTIVITY_HEATING:
         hdr_bg = "linear-gradient(90deg,#E67E22,#e94560)"
+        hdr_fg = "#fff"
+    elif activity == PUMP_ACTIVITY_RUNNING:
+        hdr_bg = "linear-gradient(90deg,#27AE60,#2ECC71)"
         hdr_fg = "#fff"
     else:
         hdr_bg = "#3a3f4b"
@@ -170,6 +177,8 @@ def render_live():
                 scop_total=scop_total,
                 label=f"SCOP {selected_range}",
                 running=running,
+                active_mode=active_mode,
+                show_cwu=has_cwu,
             )
         with col_metrics:
             # COP chwilowy — pełna szerokość kolumny metryk
@@ -207,8 +216,17 @@ def render_live():
 
     # Wspólna skala dla obu barów (15–60°C), aby ta sama nastawa była w tym samym
     # miejscu i paski były porównywalne wprost (różne skale myliły — 35°C wypadało indziej).
-    render_temp_bar_setpoint("🔥 CO", t_supply, t_set_co, "temp-bar-co", max_temp=60.0, min_temp=15.0)
-    render_temp_bar_setpoint("🚿 CWU", t_cwu, t_set_cwu, "temp-bar-cwu", max_temp=60.0, min_temp=15.0)
+    # Aktywny tryb (grzeje teraz) → label pogrubiony + „grzeje" w kolorze trybu.
+    co_label = (
+        '🔥 <b style="color:#2196F3;">CO · grzeje</b>' if active_mode == "co" else "🔥 CO"
+    )
+    cwu_label = (
+        '🚿 <b style="color:#E67E22;">CWU · grzeje</b>' if active_mode == "cwu" else "🚿 CWU"
+    )
+    render_temp_bar_setpoint(co_label, t_supply, t_set_co, "temp-bar-co", max_temp=60.0, min_temp=15.0)
+    # Pasek CWU tylko gdy pompa obsługuje CWU (czujnik zasobnika podłączony).
+    if has_cwu:
+        render_temp_bar_setpoint(cwu_label, t_cwu, t_set_cwu, "temp-bar-cwu", max_temp=60.0, min_temp=15.0)
 
 
 render_live()

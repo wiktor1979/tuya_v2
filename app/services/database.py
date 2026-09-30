@@ -499,3 +499,50 @@ def get_meter_energy_consumption(ts_from: int, ts_to: int) -> Optional[float]:
         return None
     
     return last_val - first_val
+
+
+def get_weather_daily_avg(
+    ts_from: int, ts_to: int, time_offset_hours: int = 0
+) -> dict:
+    """Średnia dobowa temperatura zewnętrzna z danych pogodowych (Open-Meteo).
+
+    Jedno WSPÓLNE źródło temperatury dla wszystkich pomp — HDD liczony z tych
+    wartości jest identyczny i porównywalny między pompami (czujnik amb_temp
+    jednostki ma offset zależny od montażu/kalibracji, więc HDD z niego jest
+    nieporównywalny — patrz decyzja 2026-09-27).
+
+    Dzień wyznaczany LOKALNIE (epoch + time_offset_hours), spójnie z podziałem
+    dób w compute_energy(). Zwraca zwykłą średnią z odczytów (dane ~co 1 h,
+    równomierne — ważenie czasowe zbędne).
+
+    Args:
+        ts_from: Start zakresu (epoch UTC).
+        ts_to: Koniec zakresu (epoch UTC).
+        time_offset_hours: Offset strefy lokalnej vs UTC (CEST=2, CET=1).
+
+    Returns:
+        dict {date (datetime.date) -> średnia temperatura [°C]}.
+        Puste gdy brak danych pogodowych w oknie.
+    """
+    from datetime import date as _date
+
+    with db_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT date(timestamp, 'unixepoch', ? ) AS d, AVG(temperature)
+            FROM weather_data
+            WHERE temperature IS NOT NULL
+              AND timestamp >= ? AND timestamp <= ?
+            GROUP BY d
+            """,
+            (f"{time_offset_hours:+d} hours", ts_from, ts_to),
+        )
+        rows = cursor.fetchall()
+
+    result: dict = {}
+    for d_str, avg_t in rows:
+        if d_str is None or avg_t is None:
+            continue
+        y, m, dd = (int(x) for x in d_str.split("-"))
+        result[_date(y, m, dd)] = float(avg_t)
+    return result

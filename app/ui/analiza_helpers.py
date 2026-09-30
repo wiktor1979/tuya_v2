@@ -22,15 +22,17 @@ import streamlit as st
 
 from app.config import (
     DB_FILE, HEAT_PUMP_DEV_ID, SERVER_TIMEZONE_OFFSET,
-    COMP_FREQ_ON_THRESHOLD, CWU_VALVE_THRESHOLD, TEMP_CODES,
+    COMP_FREQ_ON_THRESHOLD, TEMP_CODES,
     DEFAULT_COS_PHI,
 )
+from app.core.energy import WORK_MODE_CODES, _classify_cwu_mask
 
 # Kody potrzebne stronie Analiza (więcej niż ENERGY_CODES — diagnostyka mechaniczna)
 ANALIZA_CODES: tuple[str, ...] = (
     "ac_vol", "ac_curr", "comp_freq", "flow_rate",
     "out_water_temp", "in_water_temp", "amb_temp",
-    "valve", "defrost", "heat_temp_set", "idr_temp_set",
+    "work_mode", "tank_temp", "hot_water_temp_set",  # klasyfikacja CO/CWU (DP 109 + histereza)
+    "defrost", "heat_temp_set", "idr_temp_set",
     "disc_temp", "back_temp", "m_eev", "a_eev", "dc_fan1", "zone_select",
 )
 
@@ -92,6 +94,14 @@ def load_analiza_pivot(
             lambda s: BOOL_MAP.get(str(s).strip(), np.nan)
         )
 
+    # work_mode to enum tekstowy — mapujemy na stały kod liczbowy (jak w energy.py),
+    # by przeszedł przez pivot+ffill i posłużył do klasyfikacji trybu CO/CWU.
+    wm_mask = (df["code"] == "work_mode") & df["val_str"].notna()
+    if wm_mask.any():
+        df.loc[wm_mask, "val_num"] = df.loc[wm_mask, "val_str"].map(
+            lambda s: WORK_MODE_CODES.get(str(s).strip(), np.nan)
+        )
+
     # Pivot long -> wide
     piv = df.pivot_table(index="timestamp", columns="code", values="val_num", aggfunc="first")
     piv = piv.sort_index().ffill()
@@ -126,9 +136,13 @@ def load_analiza_pivot(
     piv["P_th_kw"] = p_th_w / 1000.0
     piv["P_el_kw"] = p_el_w / 1000.0
 
-    # Tryb: CWU gdy valve >= próg, inaczej CO
-    valve = piv["valve"].fillna(0)
-    piv["Tryb"] = np.where(valve >= CWU_VALVE_THRESHOLD, "CWU", "CO")
+    # Tryb CO/CWU — kanoniczna klasyfikacja z silnika (work_mode + histereza zasobnika).
+    # Zawór 4-drożny NIE rozróżnia CO/CWU — patrz _classify_cwu_mask w energy.py.
+    wm_code = piv["work_mode"].fillna(0).to_numpy(dtype=float)
+    tank = piv["tank_temp"].fillna(0).to_numpy(dtype=float)
+    hw_set = piv["hot_water_temp_set"].fillna(0).to_numpy(dtype=float)
+    is_cwu = _classify_cwu_mask(wm_code, tank, hw_set)
+    piv["Tryb"] = np.where(is_cwu, "CWU", "CO")
 
     # Sprężarka ON/OFF + numeracja cykli pracy (work_period)
     piv["comp_on"] = (piv["comp_freq"].fillna(0) > COMP_FREQ_ON_THRESHOLD).astype(int)

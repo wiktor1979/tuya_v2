@@ -20,6 +20,7 @@ from app.config import (
     TELEGRAM_ENABLED, DAILY_REPORT_HOUR, HEAT_PUMP_DEV_ID,
     SERVER_TIMEZONE_OFFSET, ENERGY_METER_DEV_ID,
     TUYA_ACCOUNTS, FLOW_RATE_ON_THRESHOLD,
+    list_pumps,
 )
 
 # Śledzenie ostatniego odbioru danych per urządzenie
@@ -191,13 +192,13 @@ def daily_report_loop():
         if now.hour == utc_hour and now.date() != last_report_date:
             print(f"[{now.strftime('%H:%M:%S')} UTC] Generowanie raportu dziennego...", flush=True)
 
-            # Raport dla głównego urządzenia
-            send_daily_report(HEAT_PUMP_DEV_ID)
-
-            # Raporty dla pozostałych urządzeń (jeśli były aktywne)
-            for dev_id in list(_last_data_received.keys()):
-                if dev_id != HEAT_PUMP_DEV_ID:
-                    send_daily_report(dev_id)
+            # Raport per POMPA (z listy PUMPS) — każda pompa dostaje własny raport
+            # (osobny SCOP/energia/licznik/awarie, liczone dla jej device_id).
+            # Iterujemy po skonfigurowanych pompach, NIE po _last_data_received —
+            # dzięki temu licznik energii (i inne urządzenia) nie dostają raportu.
+            # Pompa bez danych za wczoraj → build_daily_report zwróci None (nie wysyła).
+            for pump in list_pumps():
+                send_daily_report(pump["device_id"])
 
             last_report_date = now.date()
 

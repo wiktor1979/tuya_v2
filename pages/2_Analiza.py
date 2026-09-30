@@ -14,7 +14,7 @@ import streamlit as st
 
 from app.ui.styles import inject_css, render_about
 from app.ui.analiza_helpers import load_analiza_pivot
-from app.ui.helpers import get_selected_pump
+from app.ui.helpers import get_selected_pump, render_pump_selector
 from app.ui import tab_heating_curve
 from app.services.database import get_weather_data
 from app.config import list_pumps, get_pump
@@ -28,24 +28,10 @@ st.markdown('<h3 style="margin:0;padding:0.2rem 0;">🔬 Analiza Parametrów</h3
 with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
 
-    # --- Wybór pompy (zapamiętany w query_params: ?pump=...) ---
-    _pumps = list_pumps()
-    _pump_ids = [p["id"] for p in _pumps]
-    _pump_names = {p["id"]: p["name"] for p in _pumps}
-    _current_pump = get_selected_pump()
-    _idx = _pump_ids.index(_current_pump["id"]) if _current_pump["id"] in _pump_ids else 0
-    if len(_pumps) > 1:
-        _sel_id = st.selectbox(
-            "Pompa:", _pump_ids, index=_idx,
-            format_func=lambda pid: _pump_names.get(pid, pid),
-            key="pump_select",
-        )
-        if st.query_params.get("pump") != _sel_id:
-            st.query_params["pump"] = _sel_id
-            st.rerun()
-    else:
-        _sel_id = _current_pump["id"]
-    sel_device_id = get_pump(_sel_id)["device_id"]
+    # --- Wybór pompy (trwały: URL + session_state + localStorage przeglądarki) ---
+    selected_pump = render_pump_selector()
+    _sel_id = selected_pump["id"]
+    sel_device_id = selected_pump["device_id"]
 
     selected_range = st.selectbox("Zakres:", ["Dzisiaj", "3 dni", "7 dni", "30 dni", "90 dni"], index=2)
     if st.button("🔄 Odśwież dane"):

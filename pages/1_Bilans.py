@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 from app.ui.styles import inject_css, render_scop_box, STATUS_COLORS, render_about
-from app.ui.helpers import cached_energy, load_calibration, cached_meter_energy, cached_meter_energy_daily, get_selected_pump
+from app.ui.helpers import cached_energy, load_calibration, cached_meter_energy, cached_meter_energy_daily, get_selected_pump, render_pump_selector
 from app.ui.analiza_helpers import load_analiza_pivot
 from app.ui.labels import METRICS, scop_delta, e_el_help_with_standby
 from app.config import (
@@ -23,24 +23,9 @@ st.markdown('<h3 style="margin:0;padding:0.2rem 0;">⚡ Bilans i SCOP</h3>', uns
 with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
 
-    # --- Wybór pompy (zapamiętany w query_params: ?pump=...) ---
-    _pumps = list_pumps()
-    _pump_ids = [p["id"] for p in _pumps]
-    _pump_names = {p["id"]: p["name"] for p in _pumps}
-    _current_pump = get_selected_pump()
-    _idx = _pump_ids.index(_current_pump["id"]) if _current_pump["id"] in _pump_ids else 0
-    if len(_pumps) > 1:
-        _sel_id = st.selectbox(
-            "Pompa:", _pump_ids, index=_idx,
-            format_func=lambda pid: _pump_names.get(pid, pid),
-            key="pump_select",
-        )
-        if st.query_params.get("pump") != _sel_id:
-            st.query_params["pump"] = _sel_id
-            st.rerun()
-    else:
-        _sel_id = _current_pump["id"]
-    selected_pump = get_pump(_sel_id)
+    # --- Wybór pompy (trwały: URL + session_state + localStorage przeglądarki) ---
+    selected_pump = render_pump_selector()
+    _sel_id = selected_pump["id"]
     sel_device_id = selected_pump["device_id"]
     sel_meter_id = selected_pump["meter_id"]
 

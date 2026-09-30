@@ -54,7 +54,8 @@ tuya_v2/
 - **Jedna funkcja `compute_energy()`** — używana wszędzie (dashboard, raporty, Telegram)
 - **Jedna funkcja `compute_scop()`** — jedyne źródło wzoru SCOP (scope: total/co/cwu, kind: real/nominal); wszystkie strony i silnik jej używają, więc wyniki są spójne
 - **Wykrywanie pracy pompy po pompie wody** — `is_pump_running()` (`app/core/physics.py`, próg `flow_rate > FLOW_RATE_ON_THRESHOLD`) to jedno źródło stanu „agregat pracuje" (interwał pollingu, tło UI, status na żywo). Pompa wody rusza ~2 min przed sprężarką i pracuje ~2 min po niej, więc obejmuje pełny cykl. `comp_freq > 5` pozostaje osobno jako „sprężarka pracuje" (energia, SCOP, liczenie startów) — dwa różne pojęcia
-- **Obsługa wielu pomp** — lista `PUMPS` w `config.py` (id/name/device_id/meter_id); wybór pompy w sidebarze zapamiętany w `st.query_params` (`?pump=`, przeżywa odświeżenie). Licznik energii powiązany z pompą (`meter_id`) — pompa bez licznika (`meter_id=None`) pokazuje „brak", SCOP z sondy prądowej działa normalnie. Wszystkie funkcje odczytu przyjmują `device_id`/`meter_id`
+- **Klasyfikacja CO/CWU po `work_mode`** (DP 109), nie po zaworze. `valve` (DP 117) to zawór **4-drożny** (rewers grzanie/chłodzenie) i koreluje ze sprężarką — NIE rozróżnia CO/CWU. Podział wyznacza `_classify_cwu_mask()` (`app/core/energy.py`, jedyne źródło prawdy): `heat`→CO, `hot_water`→CWU, `heat_hot_water`→podział wg **histerezy zasobnika** (wejście w CWU gdy `hot_water_temp_set − tank_temp > 5°C`, wyjście dopiero gdy tank osiągnie temperaturę zadaną, tj. różnica ≤ 0°C — CWU ma priorytet i jest grzane do końca). Chłodzenie (`cool`/`cool_hot_water`) wyłączone sprzętowo, pomijane w bilansie
+- **Obsługa wielu pomp** — lista `PUMPS` w `config.py` (id/name/device_id/meter_id); wybór pompy renderowany wspólnym `render_pump_selector()` (`app/ui/helpers.py`) i zapamiętany trwale w trzech warstwach: `st.query_params` (`?pump=`, F5 i link), `st.session_state` (nawigacja między stronami), oraz **localStorage przeglądarki** (`streamlit-local-storage`) — wybór przeżywa zamknięcie i ponowne otwarcie przeglądarki, PER URZĄDZENIE (dwie osoby na różnych sprzętach mają niezależny wybór; świadomie nie trzymany globalnie w bazie). Licznik energii powiązany z pompą (`meter_id`) — pompa bez licznika (`meter_id=None`) pokazuje „brak", SCOP z sondy prądowej działa normalnie. Wszystkie funkcje odczytu przyjmują `device_id`/`meter_id`
 - **Obliczenia w kawałkach (chunked)** — dla dużych zakresów (zima: 6M+ próbek); suma daily równa się total, single vs chunked daje ten sam SCOP
 - **Brak dodatkowych tabel wyników w bazie** — wyniki obliczane na żądanie
 - **Czysty Python w rdzeniu** — `app/core/` bez zależności od Streamlit; UI i usługi mogą używać Streamlit/requests
@@ -99,11 +100,12 @@ Do obwodu pompy podłączony jest inteligentny licznik energii Tuya (odczyt zdal
 
 ## Testy
 
-105 testów pokrywających:
+113 testów pokrywających:
 
 - formuły fizyczne (COP, moc cieplna, przepływ, HDD)
 - wykrywanie pracy pompy po pompie wody (`is_pump_running()` — próg flow_rate, None/typy)
 - obsługę wielu pomp (`get_pump`/`list_pumps`, zbiory device_id, pompa bez licznika)
+- trwały wybór pompy (`get_selected_pump`/`persist_pump_choice` — priorytety query_params > session_state > localStorage > default, przetrwanie zamknięcia przeglądarki)
 - obliczenia energii (`compute_energy()`) i kalibrację (addytywny model, nie mnożnik)
 - wzór SCOP (`compute_scop()` — scope total/co/cwu, kind real/nominal, znak defrostu)
 - obsługę cykli rozmrażania (defrost) i filtrowanie trybów pracy

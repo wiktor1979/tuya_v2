@@ -31,7 +31,7 @@ class TestBuildDailyReport:
         """Raport buduje się bez NameError i zawiera zużycie z licznika."""
         with mock.patch("app.core.energy.compute_energy", return_value=_fake_result()), \
              mock.patch("app.services.database.load_calibration", return_value={
-                 "cos_phi": 0.95, "standby_power_w": 4.0, "active_power_w": 60.0,
+                 "cos_phi": 0.95, "standby_power_w": 4.0, "active_power_w": 300.0,
                  "hidden_power_w": 0.0, "sensor_factor": 0.98,
              }), \
              mock.patch("app.services.database.get_remote_meter_energy", return_value=2.73), \
@@ -49,7 +49,7 @@ class TestBuildDailyReport:
         """Brak energii (e_el_total <= 0) → raport None."""
         with mock.patch("app.core.energy.compute_energy", return_value=EnergyResult()), \
              mock.patch("app.services.database.load_calibration", return_value={
-                 "cos_phi": 0.95, "standby_power_w": 4.0, "active_power_w": 60.0,
+                 "cos_phi": 0.95, "standby_power_w": 4.0, "active_power_w": 300.0,
                  "hidden_power_w": 0.0, "sensor_factor": 0.98,
              }), \
              mock.patch("app.services.database.get_remote_meter_energy", return_value=None), \
@@ -58,3 +58,47 @@ class TestBuildDailyReport:
             report = notifier.build_daily_report("dev-test")
 
         assert report is None
+
+
+class TestPerPumpReport:
+    """build_daily_report — poprawny device_id i meter_id per pompa."""
+
+    def test_passes_device_id_to_compute_energy(self) -> None:
+        """compute_energy dostaje device_id danej pompy (raport per pompa)."""
+        from app.config import PUMPS
+        dev = PUMPS[0]["device_id"]
+
+        with mock.patch("app.core.energy.compute_energy", return_value=_fake_result()) as m_ce, \
+             mock.patch("app.services.database.load_calibration", return_value={
+                 "cos_phi": 0.95, "standby_power_w": 4.0, "active_power_w": 300.0,
+                 "hidden_power_w": 0.0, "sensor_factor": 0.98,
+             }), \
+             mock.patch("app.services.database.get_remote_meter_energy", return_value=None) as m_meter, \
+             mock.patch("app.services.database.get_fault_history", return_value=[]), \
+             mock.patch("app.services.database.db_cursor", _fake_cursor):
+            notifier.build_daily_report(dev)
+
+        # device_id przekazany do silnika energii
+        assert m_ce.call_args.kwargs.get("device_id") == dev
+        # meter_id pompy 0 przekazany do licznika (3. pozycyjny argument)
+        assert m_meter.call_args.args[2] == PUMPS[0]["meter_id"]
+
+    def test_pump_without_meter_gets_none_meter_id(self) -> None:
+        """Pompa bez licznika (meter_id=None) → get_remote_meter_energy dostaje None."""
+        from app.config import PUMPS
+        # Znajdź pompę bez licznika (jeśli istnieje w konfiguracji)
+        no_meter = next((p for p in PUMPS if p["meter_id"] is None), None)
+        if no_meter is None:
+            return  # brak takiej pompy w konfiguracji — nic do sprawdzenia
+
+        with mock.patch("app.core.energy.compute_energy", return_value=_fake_result()), \
+             mock.patch("app.services.database.load_calibration", return_value={
+                 "cos_phi": 0.95, "standby_power_w": 4.0, "active_power_w": 300.0,
+                 "hidden_power_w": 0.0, "sensor_factor": 0.98,
+             }), \
+             mock.patch("app.services.database.get_remote_meter_energy", return_value=None) as m_meter, \
+             mock.patch("app.services.database.get_fault_history", return_value=[]), \
+             mock.patch("app.services.database.db_cursor", _fake_cursor):
+            notifier.build_daily_report(no_meter["device_id"])
+
+        assert m_meter.call_args.args[2] is None

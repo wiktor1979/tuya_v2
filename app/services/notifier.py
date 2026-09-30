@@ -125,11 +125,20 @@ def build_daily_report(device_id: str) -> Optional[str]:
     Returns:
         Tekst raportu Markdown lub None jeśli brak danych.
     """
-    from app.services.database import db_cursor, get_fault_history, load_calibration, get_remote_meter_energy
+    from app.services.database import db_cursor, get_fault_history, load_calibration, get_remote_meter_energy, get_weather_daily_avg
     from app.core.energy import compute_energy
-    from app.config import SERVER_TIMEZONE_OFFSET
+    from app.config import SERVER_TIMEZONE_OFFSET, list_pumps
     import pandas as pd
     import sqlite3
+
+    # Licznik przypisany do TEJ pompy (po device_id). Pompa bez licznika → meter_id=None
+    # → get_remote_meter_energy zwróci None ("brak danych"). Dzięki temu każda pompa
+    # raportuje własny licznik, nie zawsze licznik pompy domyślnej.
+    meter_id = None
+    for _p in list_pumps():
+        if _p["device_id"] == device_id:
+            meter_id = _p["meter_id"]
+            break
 
     # Kalibracja — JEDNO źródło prawdy (tabela settings). Te same wartości co dashboard.
     cal = load_calibration()
@@ -147,7 +156,17 @@ def build_daily_report(device_id: str) -> Optional[str]:
     today = now_local.date()
     yesterday = today - timedelta(days=1)
 
-    # Użyj compute_energy() — jedno źródło prawdy
+    # HDD z danych pogodowych (wspólne źródło, porównywalne między pompami).
+    # Granice doby "wczoraj" w epoch UTC: północ lokalna = epoch(D 00:00 UTC) - offset*3600.
+    _off = SERVER_TIMEZONE_OFFSET * 3600
+    _wts_from = int(datetime(yesterday.year, yesterday.month, yesterday.day, tzinfo=timezone.utc).timestamp()) - _off
+    _wts_to = int(datetime(today.year, today.month, today.day, tzinfo=timezone.utc).timestamp()) - _off
+    try:
+        weather_daily = get_weather_daily_avg(_wts_from, _wts_to, SERVER_TIMEZONE_OFFSET)
+    except Exception:
+        weather_daily = {}
+
+    # Użyj compute_energy() — jedno źródło prawdy. Liczone DLA TEJ pompy (device_id).
     result = compute_energy(
         date_from=yesterday.isoformat(),
         date_to=today.isoformat(),
@@ -156,6 +175,8 @@ def build_daily_report(device_id: str) -> Optional[str]:
         active_power_w=active_power_w,
         hidden_power_w=hidden_power_w,
         sensor_factor=sensor_factor,
+        device_id=device_id,
+        weather_daily=weather_daily,
     )
 
     if result.e_el_total <= 0:
@@ -175,7 +196,7 @@ def build_daily_report(device_id: str) -> Optional[str]:
     ts_end = int(datetime(today.year, today.month, today.day, tzinfo=timezone.utc).timestamp()) - offset_sec
 
     # Zużycie z licznika zdalnego Tuya (add_ele) za wczoraj
-    meter_consumption = get_remote_meter_energy(ts_start, ts_end)
+    meter_consumption = get_remote_meter_energy(ts_start, ts_end, meter_id)
 
     # Awarie z fault_log za wczoraj
     with db_cursor() as cursor:

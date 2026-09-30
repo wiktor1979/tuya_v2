@@ -39,14 +39,14 @@ DB_FILE: str = os.environ.get("DB_FILE", "./data/tuya_telemetry.db")
 PUMPS: list[dict] = [
     {
         "id": "pompa1",
-        "name": "Pompa 1",
+        "name": "Wiktor",
         "device_id": "bf874f7ae72aca1fc23op0",
         "meter_id": "bf215e9c483af020b12cak",
     },
     {
         "id": "pompa2",
-        "name": "Pompa 2",
-        "device_id": "<DEVICE_ID_2>",  # TODO: wpisać realne device_id drugiej pompy
+        "name": "Karol",
+        "device_id": "bf16fd09ab4030b8f8ktge",  # TODO: wpisać realne device_id drugiej pompy
         "meter_id": None,               # druga pompa BEZ licznika energii
     },
 ]
@@ -112,7 +112,9 @@ ENERGY_CODES: tuple[str, ...] = (
     "ac_vol", "ac_curr",               # P_el
     "flow_rate", "out_water_temp", "in_water_temp",  # P_th
     "comp_freq",                        # praca sprężarki (ON/OFF, starty)
-    "valve",                            # CO/CWU (>= 0.5 = CWU)
+    "work_mode",                        # tryb pracy (heat/hot_water/heat_hot_water) → CO/CWU
+    "tank_temp",                        # temp. zasobnika CWU (podział trybu łączonego)
+    "hot_water_temp_set",               # zadana temp. CWU (podział trybu łączonego)
     "defrost",                          # cykl odszraniania
     "amb_temp",                         # temperatura zewnętrzna (HDD)
 )
@@ -135,8 +137,33 @@ Przerwy > 360s traktowane jako gap w danych (E=0, gaps_skipped++)."""
 COMP_FREQ_ON_THRESHOLD: float = 5.0
 """Sprężarka pracuje gdy comp_freq > 5 Hz."""
 
-CWU_VALVE_THRESHOLD: float = 0.5
-"""Tryb CWU gdy valve >= 0.5, CO gdy < 0.5."""
+CWU_TANK_DIFF_ON: float = 5.0
+"""Próg WEJŚCIA w tryb CWU w trybie łączonym 'heat_hot_water'.
+
+Gdy (hot_water_temp_set − tank_temp) > 5°C, zasobnik CWU jest niedogrzany
+i pompa priorytetowo ładuje CWU (priorytet ciepłej wody). Inaczej grzeje CO.
+Zawór 3-drożny CO/CWU NIE jest raportowany jako osobny DP w tej pompie, więc
+podział trybu łączonego wyznaczamy z różnicy temperatur zasobnika."""
+
+CWU_TANK_DIFF_OFF: float = 0.0
+"""Próg WYJŚCIA z trybu CWU (histereza). Raz rozpoczęte ładowanie CWU trwa aż
+zasobnik osiągnie temperaturę zadaną, tj. różnica (hot_water_temp_set − tank_temp)
+spadnie ≤ 0°C. Histereza (ON=5, OFF=0, rozpiętość 5°C): CWU ma priorytet i jest
+grzane do końca (do setpointu), zanim pompa wróci do CO."""
+
+HEATING_WORK_MODES: frozenset[str] = frozenset({"heat", "heat_hot_water"})
+"""work_mode obejmujące ogrzewanie CO."""
+
+DHW_WORK_MODES: frozenset[str] = frozenset({"hot_water", "heat_hot_water"})
+"""work_mode grzewcze obejmujące CWU (ciepłą wodę). Chłodzenie ('cool_hot_water')
+pominięte — wyłączone sprzętowo i wykluczane z bilansu grzewczego."""
+
+COMBINED_WORK_MODE: str = "heat_hot_water"
+"""Tryb łączony CO+CWU — podział wg reguły histerezy zasobnika."""
+
+COOLING_WORK_MODES: frozenset[str] = frozenset({"cool", "cool_hot_water"})
+"""work_mode z chłodzeniem. Chłodzenie jest WYŁĄCZONE sprzętowo w tej instalacji —
+energia chłodzenia pomijana w bilansie SCOP grzewczym."""
 
 FLOW_RATE_ON_THRESHOLD: float = 3.0
 """Pompa wody (obiegowa) pracuje gdy flow_rate (surowe, skala ×0.1 m³/h) > 3,
@@ -157,10 +184,12 @@ DEFAULT_STANDBY_POWER_W: float = 4.0
 """Pobór pompy w standby [W]. Zmierzone licznikiem fizycznym (2026-09-02):
 obwód licznika = TYLKO pompa ciepła, cur_power w spoczynku ~4 W (moc czynna).
 Wcześniej 25 W (szacunek dopasowany do sondy prądowej przed montażem licznika)."""
-DEFAULT_ACTIVE_POWER_W: float = 60.0
+DEFAULT_ACTIVE_POWER_W: float = 300.0
 """Dodatkowa moc WIDOCZNA w czujniku podczas pracy sprężarki [W].
-Ustawione 60 W (2026-09-02) — synchronizacja z wartością w tabeli settings,
-która jest realnie używana przez load_calibration(). Config = fallback dla pustej bazy."""
+300 W (2026-09-11) — realny dodatkowy pobór podczas pracy agregatu: pompa
+obiegowa + wentylator (max) + elektronika, widoczny w sondzie prądowej.
+Synchronizacja z wartością w tabeli settings (load_calibration()).
+Config = fallback dla pustej bazy."""
 DEFAULT_HIDDEN_POWER_W: float = 0.0
 """Stały pobór NIEWIDOCZNY w czujniku [W]. Kalibrowany z licznika. 0 = brak (dane letnie nie dają sensownego hidden)."""
 DEFAULT_SENSOR_FACTOR: float = 0.98
@@ -254,9 +283,9 @@ PARAM_INFO: dict[str, dict[str, str]] = {
     "m_eev": {"label": "Zawór EEV", "desc": "Pozycja głównego zaworu rozprężnego, 0-480 kroków"},
     "dc_fan1": {"label": "Wentylator DC", "desc": "Obroty wentylatora DC, 0-1000 RPM"},
     "defrost": {"label": "Odszranianie", "desc": "Cykl odszraniania parownika"},
-    "valve": {"label": "Zawór 3-drożny", "desc": "CO/CWU (≥0.5 = CWU)"},
+    "valve": {"label": "Zawór 4-drożny", "desc": "Rewers grzanie/chłodzenie (koreluje ze sprężarką, nie CO/CWU)"},
     "fault": {"label": "Kody błędów", "desc": "Bitmapa błędów E01-E16, P01-P14"},
-    "work_mode": {"label": "Tryb pracy", "desc": "cool, heat, auto, hot_water, ..."},
+    "work_mode": {"label": "Tryb pracy", "desc": "heat=CO, hot_water=CWU, heat_hot_water=CO+CWU (źródło podziału)"},
     "zone_select": {"label": "Aktywna strefa", "desc": "0=brak, 1=Z1, 2=Z2, 3=obie"},
 }
 

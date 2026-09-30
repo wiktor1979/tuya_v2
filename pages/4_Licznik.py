@@ -13,7 +13,7 @@ from app.config import (
     list_pumps, get_pump,
 )
 from app.services.database import save_manual_energy_reading, update_manual_energy_reading, delete_manual_energy_reading
-from app.ui.helpers import cached_energy, get_selected_pump
+from app.ui.helpers import cached_energy, get_selected_pump, render_pump_selector
 from app.core.physics import compute_p_el_w_array
 from app.services.database import load_calibration
 
@@ -133,24 +133,9 @@ def load_power_comparison(
 with st.sidebar:
     st.markdown("### ⚙️ Ustawienia")
 
-    # --- Wybór pompy (zapamiętany w query_params: ?pump=...) ---
-    _pumps = list_pumps()
-    _pump_ids = [p["id"] for p in _pumps]
-    _pump_names = {p["id"]: p["name"] for p in _pumps}
-    _current_pump = get_selected_pump()
-    _idx = _pump_ids.index(_current_pump["id"]) if _current_pump["id"] in _pump_ids else 0
-    if len(_pumps) > 1:
-        _sel_id = st.selectbox(
-            "Pompa:", _pump_ids, index=_idx,
-            format_func=lambda pid: _pump_names.get(pid, pid),
-            key="pump_select",
-        )
-        if st.query_params.get("pump") != _sel_id:
-            st.query_params["pump"] = _sel_id
-            st.rerun()
-    else:
-        _sel_id = _current_pump["id"]
-    selected_pump = get_pump(_sel_id)
+    # --- Wybór pompy (trwały: URL + session_state + localStorage przeglądarki) ---
+    selected_pump = render_pump_selector()
+    _sel_id = selected_pump["id"]
     sel_device_id = selected_pump["device_id"]
     sel_meter_id = selected_pump["meter_id"]
 

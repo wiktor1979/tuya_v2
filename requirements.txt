@@ -8,6 +8,7 @@ requests
 # Dashboard
 streamlit==1.61.1
 plotly==6.1.2
+streamlit-local-storage==0.0.25
 
 # Core
 pandas==2.2.3

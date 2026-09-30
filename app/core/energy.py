@@ -13,7 +13,9 @@ import pandas as pd
 
 from app.config import (
     COMP_FREQ_ON_THRESHOLD,
-    CWU_VALVE_THRESHOLD,
+    COOLING_WORK_MODES,
+    CWU_TANK_DIFF_OFF,
+    CWU_TANK_DIFF_ON,
     DB_FILE,
     DEFAULT_ACTIVE_POWER_W,
     DEFAULT_COS_PHI,
@@ -29,6 +31,86 @@ from app.config import (
 )
 from app.core.models import EnergyResult
 from app.core.physics import compute_hdd, compute_p_el_w_array, compute_p_th_w_array
+
+
+# Mapowanie work_mode (enum tekstowy z Tuya) na stały kod liczbowy.
+# Pozwala propagować tryb przez pivot+ffill, które operują na wartościach numerycznych.
+# Kody są arbitralne, ale STAŁE — używane wyłącznie wewnętrznie w tym module.
+WORK_MODE_CODES: dict[str, float] = {
+    "cool": 1.0,
+    "heat": 2.0,
+    "auto": 3.0,
+    "hot_water": 4.0,
+    "cool_hot_water": 5.0,
+    "heat_hot_water": 6.0,
+    "auto_dhw": 7.0,
+}
+"""Enum work_mode → kod liczbowy (patrz beko DP codes.py, DP 109)."""
+
+_WM_CODE = {name: code for name, code in WORK_MODE_CODES.items()}
+
+
+def _classify_cwu_mask(
+    work_mode_code: np.ndarray,
+    tank_temp: np.ndarray,
+    hot_water_set: np.ndarray,
+) -> np.ndarray:
+    """Wyznacza maskę CWU (True = ciepła woda, False = CO) dla każdego interwału.
+
+    JEDYNE źródło prawdy dla podziału CO/CWU w silniku energii.
+
+    W tej pompie zawór 3-drożny CO/CWU nie jest raportowany jako osobny DP,
+    więc tryb wyznaczamy z work_mode (DP 109):
+        - 'heat'                    → zawsze CO,
+        - 'hot_water'               → zawsze CWU,
+        - 'heat_hot_water' (łączony) → podział wg reguły histerezy zasobnika:
+            wejście w CWU gdy (hot_water_set − tank_temp) > CWU_TANK_DIFF_ON,
+            wyjście z CWU gdy różnica spadnie ≤ CWU_TANK_DIFF_OFF.
+          Histereza zapobiega migotaniu klasyfikacji wokół progu.
+
+    Chłodzenie ('cool'/'cool_hot_water') jest wyłączone sprzętowo i pomijane
+    w bilansie grzewczym (wykluczane osobną maską w _compute_from_pivot),
+    dlatego ta funkcja NIE zalicza go do CWU.
+
+    Args:
+        work_mode_code: Kod work_mode per interwał (patrz WORK_MODE_CODES).
+        tank_temp: Temperatura zasobnika CWU [°C].
+        hot_water_set: Zadana temperatura CWU [°C].
+
+    Returns:
+        Tablica bool — True gdy interwał należy do CWU, False gdy do CO.
+    """
+    n = len(work_mode_code)
+    is_cwu = np.zeros(n, dtype=bool)
+
+    code_hw = _WM_CODE["hot_water"]
+    code_combined = _WM_CODE["heat_hot_water"]
+
+    # Tryb jednoznaczny CWU (wektorowo)
+    is_cwu |= work_mode_code == code_hw
+
+    # Tryb łączony — histereza stanowa (sekwencyjnie, bo zależy od poprzedniej próbki)
+    combined = work_mode_code == code_combined
+    if combined.any():
+        diff = hot_water_set - tank_temp
+        charging_cwu = False  # stan histerezy: czy aktualnie ładujemy CWU
+        for i in range(n):
+            if not combined[i]:
+                # poza trybem łączonym reset stanu histerezy
+                charging_cwu = False
+                continue
+            d = diff[i]
+            if charging_cwu:
+                # trwa ładowanie CWU aż różnica spadnie do progu wyjścia
+                if d <= CWU_TANK_DIFF_OFF:
+                    charging_cwu = False
+            else:
+                # start ładowania CWU gdy zasobnik wyraźnie niedogrzany
+                if d > CWU_TANK_DIFF_ON:
+                    charging_cwu = True
+            is_cwu[i] = charging_cwu
+
+    return is_cwu
 
 
 def compute_scop(
@@ -115,6 +197,7 @@ def compute_energy(
     dt_max_sec: int = DT_MAX_SEC,
     db_file: str = DB_FILE,
     device_id: str = HEAT_PUMP_DEV_ID,
+    weather_daily: Optional[dict] = None,
 ) -> EnergyResult:
     """Jedno źródło prawdy dla energii i SCOP.
 
@@ -160,6 +243,7 @@ def compute_energy(
             ts_from, ts_to, mode, include_standby, daily_breakdown,
             time_offset_hours, cos_phi, standby_power_w, active_power_w,
             hidden_power_w, sensor_factor, dt_max_sec, db_file, device_id, t_start,
+            weather_daily,
         )
         result.date_from = date_from or ""
         result.date_to = date_to or ""
@@ -183,7 +267,7 @@ def compute_energy(
     result = _compute_from_pivot(
         pivot, mode, include_standby, time_offset_hours,
         cos_phi, standby_power_w, active_power_w, hidden_power_w,
-        sensor_factor, dt_max_sec, daily_breakdown,
+        sensor_factor, dt_max_sec, daily_breakdown, weather_daily,
     )
 
     result.date_from = date_from or ""
@@ -235,7 +319,11 @@ def _resolve_time_range(
     if date_to is None:
         ts_to = int(_time.time())
     else:
-        dt = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+        # date_to jest EKSKLUZYWNY (jak date_from) — okno to [date_from 00:00, date_to 00:00).
+        # notifier.py woła compute_energy(date_from=yesterday, date_to=today) chcąc JEDEN dzień;
+        # strona Bilans woła date_from=<n dni temu>, date_to=None. Poprzednio dodawano tu
+        # +1 dzień, co liczyło o jeden dzień za dużo (raport dzienny sumował 2 doby).
+        dt = datetime.strptime(date_to, "%Y-%m-%d")
         delta = dt - datetime(1970, 1, 1)
         ts_to = int(delta.total_seconds()) - offset_sec
 
@@ -289,6 +377,15 @@ def _load_and_pivot(
         mask = df["val_num"].isna() & df["val_str"].notna()
         df.loc[mask, "val_num"] = df.loc[mask, "val_str"].map(BOOL_MAP)
 
+    # work_mode to enum tekstowy ('heat'/'hot_water'/'heat_hot_water'/...) w val_str.
+    # Pivot i ffill działają na val_num, więc mapujemy tekst na stały kod liczbowy
+    # (patrz WORK_MODE_CODES). Dzięki temu tryb propaguje się przez ffill jak inne sygnały.
+    for df in [main_df, seed_df]:
+        if df.empty:
+            continue
+        wm_mask = (df["code"] == "work_mode") & df["val_str"].notna()
+        df.loc[wm_mask, "val_num"] = df.loc[wm_mask, "val_str"].map(WORK_MODE_CODES)
+
     # Dodaj seed rows na początek (z timestamp = ts_from - 1 żeby nie kolidowały)
     if not seed_df.empty:
         seed_rows = seed_df[["timestamp", "code", "val_num"]].copy()
@@ -330,6 +427,7 @@ def _compute_from_pivot(
     sensor_factor: float,
     dt_max_sec: int,
     daily_breakdown: bool,
+    weather_daily: Optional[dict] = None,
 ) -> EnergyResult:
     """Oblicza energię z pivotowanego DataFrame surowych danych."""
     ts = pivot.index.values.astype(np.float64)
@@ -345,7 +443,9 @@ def _compute_from_pivot(
     out_temp = pivot["out_water_temp"].fillna(0).values.astype(np.float64)
     in_temp = pivot["in_water_temp"].fillna(0).values.astype(np.float64)
     comp_freq = pivot["comp_freq"].fillna(0).values.astype(np.float64)
-    valve = pivot["valve"].fillna(0).values.astype(np.float64)
+    work_mode_code = pivot["work_mode"].fillna(0).values.astype(np.float64)
+    tank_temp = pivot["tank_temp"].fillna(0).values.astype(np.float64)
+    hot_water_set = pivot["hot_water_temp_set"].fillna(0).values.astype(np.float64)
     defrost = pivot["defrost"].fillna(0).values.astype(np.float64)
     amb_temp = pivot["amb_temp"].values.astype(np.float64)  # NaN OK — osobna obsługa
 
@@ -360,17 +460,25 @@ def _compute_from_pivot(
     # Nie przechodzi przez sensor_factor — to osobny obwód
 
     # Klasyfikacja interwałów
-    is_cwu = valve >= CWU_VALVE_THRESHOLD
+    # Podział CO/CWU wg work_mode (+ histereza zasobnika dla trybu łączonego).
+    # Zawór 4-drożny (dawny 'valve') NIE rozróżnia CO/CWU — patrz _classify_cwu_mask.
+    is_cwu = _classify_cwu_mask(work_mode_code, tank_temp, hot_water_set)
     is_defrost = defrost >= 0.5
     is_comp_on = comp_freq > COMP_FREQ_ON_THRESHOLD
 
     # Filtr trybu
+    # Chłodzenie wyłączone sprzętowo — interwały 'cool'/'cool_hot_water' pomijamy
+    # w bilansie SCOP grzewczego (dla odporności, gdyby tryb pojawił się w danych).
+    cooling_codes = np.array([WORK_MODE_CODES[m] for m in COOLING_WORK_MODES])
+    is_cooling = np.isin(work_mode_code, cooling_codes)
+
+    # Filtr trybu (chłodzenie zawsze wykluczone)
     if mode == "co":
-        mode_mask = ~is_cwu
+        mode_mask = ~is_cwu & ~is_cooling
     elif mode == "cwu":
-        mode_mask = is_cwu
+        mode_mask = is_cwu & ~is_cooling
     else:
-        mode_mask = np.ones(n, dtype=bool)
+        mode_mask = ~is_cooling
 
     # Interwały Δt [s]
     dt_sec = np.diff(ts)
@@ -498,17 +606,33 @@ def _compute_from_pivot(
     amb_valid = amb_temp[~np.isnan(amb_temp)]
     amb_temp_avg = float(np.mean(amb_valid)) if len(amb_valid) > 0 else 0.0
 
-    # HDD
+    # HDD — źródło temperatury: dane pogodowe (weather_daily) gdy dostępne dla dnia,
+    # inaczej fallback na średnią amb_temp czujnika (decyzja C, 2026-09-27).
+    # Pogoda to WSPÓLNE źródło dla wszystkich pomp → HDD porównywalny (czujnik amb_temp
+    # jednostki ma offset zależny od montażu, ~1.3°C między pompami — nieporównywalny).
+    def _hdd_for_day(day, amb_avg: float) -> float:
+        if weather_daily and day in weather_daily:
+            return compute_hdd(weather_daily[day])
+        if amb_avg is None or (isinstance(amb_avg, float) and np.isnan(amb_avg)):
+            return 0.0
+        return compute_hdd(amb_avg)
+
     if daily_breakdown and daily_data:
         hdd = sum(
-            compute_hdd(dd["amb_temp_sum"] / dd["amb_temp_count"])
-            for dd in daily_data.values()
-            if dd["amb_temp_count"] > 0
+            _hdd_for_day(
+                day,
+                (dd["amb_temp_sum"] / dd["amb_temp_count"]) if dd["amb_temp_count"] > 0 else None,
+            )
+            for day, dd in daily_data.items()
         )
     else:
-        # Prosta estymacja: HDD = n_days × max(0, 15 - avg_temp)
-        n_days = max(1.0, (ts[-1] - ts[0]) / 86400.0)
-        hdd = n_days * compute_hdd(amb_temp_avg)
+        # Bez rozbicia dziennego: jeśli mamy pogodę, licz HDD z jej średnich dobowych
+        # w oknie; inaczej prosta estymacja z amb_temp czujnika (jak dotychczas).
+        if weather_daily:
+            hdd = sum(compute_hdd(t) for t in weather_daily.values())
+        else:
+            n_days = max(1.0, (ts[-1] - ts[0]) / 86400.0)
+            hdd = n_days * compute_hdd(amb_temp_avg)
 
     # Daily DataFrame
     daily_df = None
@@ -540,7 +664,7 @@ def _compute_from_pivot(
                                              scope="total", kind="nominal"),
                 "scop_real": compute_scop(el_co, el_cwu, el_standby, th_co, th_cwu, th_def,
                                           scope="total", kind="real"),
-                "hdd": compute_hdd(avg_t) if not np.isnan(avg_t) else 0.0,
+                "hdd": _hdd_for_day(day, None if np.isnan(avg_t) else avg_t),
                 "amb_temp_avg": avg_t,
                 "comp_starts": dd["comp_starts"],
                 "defrost_count": dd["defrost_count"],
@@ -584,6 +708,7 @@ def _compute_chunked(
     db_file: str,
     device_id: str,
     t_start: float,
+    weather_daily: Optional[dict] = None,
 ) -> EnergyResult:
     """Oblicza energię w kawałkach (po tygodniu) dla dużych zakresów.
 
@@ -600,27 +725,24 @@ def _compute_chunked(
     while chunk_from < ts_to:
         chunk_to = min(chunk_from + CHUNK_SEC, ts_to)
 
-        # Konwertuj timestamp na date string
-        d_from = datetime(1970, 1, 1) + timedelta(seconds=chunk_from + time_offset_hours * 3600)
-        d_to = datetime(1970, 1, 1) + timedelta(seconds=chunk_to + time_offset_hours * 3600)
-        d_from_str = d_from.strftime("%Y-%m-%d")
-        d_to_str = d_to.strftime("%Y-%m-%d")
+        # Liczymy bezpośrednio na epoch (bez round-tripu przez stringi dat).
+        # Konwersja chunk_to -> "YYYY-MM-DD" gubiłaby godziny bieżącego dnia
+        # (np. zakres 30/90 dni ucinał "dzisiaj" do północy). Warstwa pivota
+        # operuje na epoch, więc granice chunków są ciągłe i pełne.
+        conn = sqlite3.connect(db_file)
+        try:
+            pivot = _load_and_pivot(conn, device_id, chunk_from, chunk_to)
+        finally:
+            conn.close()
 
-        chunk_result = compute_energy(
-            date_from=d_from_str,
-            date_to=d_to_str,
-            mode=mode,
-            include_standby=include_standby,
-            daily_breakdown=daily_breakdown,
-            time_offset_hours=time_offset_hours,
-            cos_phi=cos_phi,
-            standby_power_w=standby_power_w,
-            active_power_w=active_power_w,
-            hidden_power_w=hidden_power_w,
-            sensor_factor=sensor_factor,
-            dt_max_sec=dt_max_sec,
-            db_file=db_file,
-            device_id=device_id,
+        if pivot.empty:
+            chunk_from = chunk_to
+            continue
+
+        chunk_result = _compute_from_pivot(
+            pivot, mode, include_standby, time_offset_hours, cos_phi,
+            standby_power_w, active_power_w, hidden_power_w, sensor_factor,
+            dt_max_sec, daily_breakdown, weather_daily,
         )
 
         # Sumuj akumulatory
