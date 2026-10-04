@@ -1,4 +1,5 @@
 """Helpery UI — cache, ładowanie statusu na żywo, formatowanie."""
+import json
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -27,6 +28,11 @@ from app.services.database import load_calibration
 #   mają NIEZALEŻNE ustawienie (świadomie NIE trzymamy tego globalnie w bazie).
 _SS_PUMP_KEY = "_selected_pump_id"
 _LS_PUMP_KEY = "tuya_selected_pump"
+
+# Klucz localStorage dla konfiguracji wykresu "Przebieg parametrów" na Panelu.
+# WSPÓLNY dla obu pomp (jeden układ). Per urządzenie/przeglądarka (jak wybór pompy) —
+# świadomie NIE globalnie w bazie: konfiguracja wykresu jest lokalna dla użytkownika.
+_LS_CHART_PARAMS_KEY = "tuya_chart_params_panel"
 
 
 def _get_local_storage():
@@ -152,6 +158,57 @@ def render_pump_selector() -> dict:
         return get_pump(sel_id)
 
     return current
+
+
+def get_chart_params(default: list) -> list:
+    """Czyta zapisaną konfigurację wykresu "Przebieg parametrów" z localStorage.
+
+    Konfiguracja jest WSPÓLNA dla obu pomp i trwała PER URZĄDZENIE/przeglądarka
+    (zapis ręczny przez persist_chart_params po kliknięciu przycisku).
+
+    Args:
+        default: Lista kodów parametrów użyta gdy brak zapisu, błąd parsowania
+            lub komponent localStorage niedostępny (np. tryb bez UI).
+
+    Returns:
+        Lista kodów parametrów (str). Fallback na `default` w razie problemów.
+    """
+    ls = _get_local_storage()
+    if ls is None:
+        return default
+    try:
+        raw = ls.getItem(_LS_CHART_PARAMS_KEY)
+    except Exception:
+        return default
+    if not raw:
+        return default
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return default
+    if not isinstance(parsed, list):
+        return default
+    codes = [c for c in parsed if isinstance(c, str)]
+    return codes if codes else default
+
+
+def persist_chart_params(codes: list) -> None:
+    """Zapisuje konfigurację wykresu do localStorage (ręcznie, po kliknięciu przycisku).
+
+    Wołane WYŁĄCZNIE na akcję użytkownika (przycisk "Zapisz układ wykresu"),
+    nie w każdym renderze — dzięki temu przypadkowa jednorazowa zmiana nie
+    nadpisuje zapisanego układu.
+
+    Args:
+        codes: Lista kodów parametrów do zapisania (JSON w localStorage).
+    """
+    ls = _get_local_storage()
+    if ls is None:
+        return
+    try:
+        ls.setItem(_LS_CHART_PARAMS_KEY, json.dumps(codes), key="ls_set_chart_params")
+    except Exception:
+        pass
 
 
 def weather_daily_for_range(

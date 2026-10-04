@@ -87,12 +87,24 @@ def load_analiza_pivot(
     if df.empty:
         return pd.DataFrame()
 
-    # valve/defrost/zone_select bywają jako val_str ("True"/"False") — konwersja na val_num
+    # valve/defrost bywają jako val_str ("True"/"False") — konwersja na val_num
     str_mask = df["val_num"].isna() & df["val_str"].notna()
     if str_mask.any():
         df.loc[str_mask, "val_num"] = df.loc[str_mask, "val_str"].map(
             lambda s: BOOL_MAP.get(str(s).strip(), np.nan)
         )
+
+    # zone_select bywa jako val_str "0".."3" (0=brak, 1=Z1, 2=Z2, 3=obie).
+    # BOOL_MAP mapuje tylko 0/1 — wartości 2/3 ginęły (NaN). Konwertujemy wprost
+    # na liczbę, by filtr strefy (krzywa grzewcza) dostał poprawne dane.
+    zs_mask = (df["code"] == "zone_select") & df["val_str"].notna()
+    if zs_mask.any():
+        def _to_zone(s):
+            try:
+                return float(str(s).strip())
+            except (TypeError, ValueError):
+                return np.nan
+        df.loc[zs_mask, "val_num"] = df.loc[zs_mask, "val_str"].map(_to_zone)
 
     # work_mode to enum tekstowy — mapujemy na stały kod liczbowy (jak w energy.py),
     # by przeszedł przez pivot+ffill i posłużył do klasyfikacji trybu CO/CWU.

@@ -23,6 +23,251 @@
 
 ---
 
+## Migracja na Oracle Cloud (OCI) — W TOKU (2026-10-03)
+
+CEL: przenieść projekt z Fly.io (app `scop`) na darmową VM Always Free w OCI.
+Collector + dashboard w JEDNYM kontenerze Docker (jak na Fly), baza SQLite na dysku,
+sekrety w env, dostęp po gołym IP:8501 (opcja A — bez reverse proxy/HTTPS na start).
+
+STAN KONTA / ZASOBY OCI (konto `wiktor79 (root)`, region eu-frankfurt-1):
+- VCN: `tuya`, CIDR 10.0.0.0/16, DNS domain `tuya.oraclevcn.com`. Utworzony kreatorem
+  „VCN with Internet Connectivity" (ma Internet Gateway + trasę 0.0.0.0/0 — nie dodawać ręcznie).
+- Podsieć publiczna: `public subnet-tuya` (10.0.0.0/24).
+- Security List (Ingress) otwarte: TCP 22 (SSH, 0.0.0.0/0), TCP 8501 (dashboard, 0.0.0.0/0)
+  + domyślne ICMP. SSH na 0.0.0.0/0 bo user ma ZMIENNE publiczne IP (logowanie tylko kluczem).
+- Instancja: `tuya-vm`, kształt `VM.Standard.A1.Flex` (ARM/aarch64, Always Free-eligible),
+  1 OCPU / 6 GB RAM, Canonical Ubuntu 22.04 (jammy). Boot volume domyślny ~46.6 GB
+  (BEZ osobnego Block Volume — baza SQLite pójdzie na boot volume).
+- Public IP: `130.162.51.207`. User SSH: `ubuntu`.
+- Klucz SSH: własny ed25519 — priv `C:\Users\qwikkmi\.ssh\oci_tuya`, pub `oci_tuya.pub`
+  (wgrany przy tworzeniu VM). Logowanie: `ssh -i C:\Users\qwikkmi\.ssh\oci_tuya ubuntu@130.162.51.207`.
+- KOSZTY: kalkulator OCI pokazuje ~7,69 zł/mies za boot volume, ale to LIST PRICE bez
+  uwzględnienia Always Free (napis „does not reflect any tier unit pricing"). Realnie 0 zł
+  w limitach Free (A1 do 4 OCPU/24 GB, dyski do 200 GB). Zalecane: ustawić Budget z alertem w Billing.
+- LIMITY Always Free A1 (z konsoli OCI, 2026-10-03): tenancy dostaje za darmo 3 000 OCPU-godzin
+  i 18 000 GB-godzin / mies. na Ampere A1 Flex (= 4 OCPU i 24 GB działające ciągle) + dwie
+  instancje VM.Standard.E2.1.Micro. Nasza VM (1 OCPU / 6 GB, 24/7) zużywa ~730 OCPU-h i ~4380 GB-h
+  / mies. = ~24% limitu A1 — z dużym zapasem, compute = 0 zł.
+
+ZROBIONE:
+- VM działa, SSH działa.
+- Docker zainstalowany (docker-ce + docker-ce-cli + containerd + buildx + compose-plugin),
+  user `ubuntu` w grupie `docker`, `docker run --rm hello-world` OK na arm64v8.
+- Repo APT Dockera `/etc/apt/sources.list.d/docker.list`:
+  `deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable`.
+  (Przy zapisie: użyć JEDNEJ linii `sudo bash -c 'echo "..." > /etc/apt/sources.list.d/docker.list'` —
+  łamanie linii / brak sudo przy `tee` powodowało „Malformed entry" i „No such file or directory".)
+
+NASTĘPNY KROK (tu kończymy sesję): PRZENIESIENIE KODU na VM. DO DECYZJI UŻYTKOWNIKA:
+1. Dostarczenie kodu: `git clone` (repo zdalne — podać URL; prywatne = token/klucz deploy)
+   czy `scp` z komputera (bez repo; wysłać tylko kod, BEZ `.env` i `data/*.db`).
+2. Czy tworzyć w repo pliki pomocnicze: `docker-compose.yml` (restart unless-stopped,
+   montaż bazy na wolumen → `DB_FILE`, wczytanie `.env`, port 8501) + `docs/deploy-oci.md`.
+
+POTEM (plan do końca):
+- build obrazu z istniejącego `Dockerfile` (bez zmian — multi-arch),
+- utworzyć `.env` na serwerze (TUYA_ACCESS_ID/KEY/DEVICE_IDS, TELEGRAM_BOT_TOKEN/CHAT_ID),
+- `docker run`/compose z `DB_FILE=/data/tuya_telemetry.db` i montażem wolumenu na bazę,
+- przenieść bazę PRODUKCYJNĄ z Fly na VM (ciągłość telemetrii/SCOP — jednorazowy transfer pliku),
+- weryfikacja: dashboard na `http://130.162.51.207:8501`, collector łapie Pulsar, raport Telegram,
+- DOPIERO po potwierdzeniu działania — wyłączyć/suspendować app `scop` na Fly (nieodwracalne — zgoda usera).
+
+UWAGI TECHNICZNE:
+- ARM: `python:3.12-slim` + pandas/numpy mają koła arm64 → build przejdzie BEZ zmian w kodzie.
+- Firewall Ubuntu/OCI: domyślne iptables mogą blokować 8501 mimo otwartej Security List.
+  Jeśli dashboard nie wejdzie → dodać wyjątek (iptables + netfilter-persistent) albo `--network host`.
+- Kod aplikacji (app/, main.py, Panel.py) NIE wymaga zmian — architektura przenośna
+  (SQLite + zmienne środowiskowe + wolumen działają identycznie jak na Fly).
+- Pulsar/Tuya: strumień ten sam (to samo konto Tuya) — collector łapie ramki bez zmian u Tuya.
+- Strefa czasowa: `get_timezone_offset()` liczy DST z zoneinfo — na VM wystarczy standardowe UTC
+  (fallback `SERVER_TIMEZONE_OFFSET` jak w fly.toml, ale funkcja i tak nadpisuje dynamicznie).
+
+---
+
+## Ustalenia i zmiany — 2026-10-01
+
+### Doradca Krzywej Grzewczej — analiza krótko- i długoterminowa (2026-10-01)
+- CEL (user): dobrać 2-punktową krzywą pogodową tak, by pompa grzała możliwie
+  CIĄGLE z MINIMALNĄ wymaganą temperaturą wody (max COP, bez taktowania). Pompa
+  NIE raportuje temperatury wody wyliczonej z krzywej — trzeba ją odtworzyć z nastaw.
+- PUNKTY KRZYWEJ (decyzja user): **−15°C i +15°C** (nie +20 jak w v1). Krzywa to
+  funkcja liniowa dwóch punktów: `T_woda(amb) = T_low + slope·(amb−(−15))`,
+  `slope = (T_high − T_low)/(15 − (−15))`. Interpolacja i ekstrapolacja.
+- SYGNAŁ ŻĄDANIA GRZANIA (kluczowe — brak bezpośredniego DP termostatu pokojowego):
+  termostat pokojowy ON/OFF czytany POŚREDNIO z `work_mode`:
+  * `hot_water` → termostat OFF (pompa robi tylko CWU),
+  * `heat_hot_water` (lub `heat`) → termostat ON (żąda grzania CO).
+  Przejście `hot_water → heat_hot_water` = termostat ZAŻĄDAŁ grzania (start epizodu),
+  powrót do `hot_water` = koniec epizodu. `work_mode` jest serią ZDARZENIOWĄ (zapis
+  tylko przy zmianie, ~700 rekordów/pompę) — epizody odtwarzane z punktów zmiany.
+- FILTR STREFY (decyzja user): krzywa dobierana dla STREFY 1. Strefa 2 ma STAŁĄ
+  temperaturę wody (nie z krzywej) → epizody samej strefy 2 POMIJANE. Liczone tylko
+  `zone_select ∈ {1 (Z1), 3 (obie)}`; `zone_select == 2` (sama Z2) odrzucane.
+- ALGORYTM (czysty core `app/core/heating_curve.py`, bez Streamlit):
+  1. `detect_heating_episodes(events, amb_samples, zone_samples, curve_zones)` —
+     z sekwencji `work_mode` wykrywa epizody ON; dla każdego: czas trwania, średnia
+     `amb` w oknie, czas OFF do następnego epizodu. Filtr strefy: epizod liczony,
+     gdy większość okna należy do `curve_zones` (domyślnie {Z1, obie}). `MAX_GAP_SEC`
+     = 24h — dłuższa przerwa OFF traktowana jako luka (nie zaniża duty cycle do zera).
+  2. `compute_duty_bins(episodes, bin_size=3°C)` — grupuje epizody wg średniej `amb`
+     i liczy DUTY CYCLE = czas ON / (ON + OFF) per przedział temperatury.
+  3. `recommend_curve_adjustment(bins, t_low, t_high, target_room, …)` — rekomendacja.
+- LOGIKA REKOMENDACJI (cel: duty cycle > 85% = praca ciągła z minimalną wodą):
+  * Niski duty w danym przedziale `amb` = woda ZA CIEPŁA (termostat szybko osiąga
+    nastawę i odcina → taktowanie). Przelicznik: ~7 pkt% niedoboru duty ≈ 1°C nadmiaru
+    wody (`_duty_to_delta`). Rekomendacja: OBNIŻ wodę.
+  * Korekta rzutowana na końce krzywej wagą liniową wg pozycji `amb` na osi −15…+15:
+    biny bliżej −15°C korygują T_low, bliżej +15°C — T_high.
+  * Duty ≥ 85% w całym obserwowanym zakresie → krzywa OK (brak zmian).
+- JAKOŚĆ DANYCH wg ROZPIĘTOŚCI temperatur zewnętrznych (decyzja user — do wyznaczenia
+  NACHYLENIA potrzeba szerokiego zakresu `amb`, nie całego sezonu):
+  * rozrzut < 8°C (`AMB_RANGE_MIN_SLOPE`) → „narrow": nie da się wyznaczyć nachylenia,
+    rekomendacja tylko dla końca bliższego obserwowanym temperaturom + ⚠️ ostrzeżenie,
+  * 8–15°C → „slope_rough": nachylenie orientacyjne,
+  * ≥ 15°C (`AMB_RANGE_RELIABLE_SLOPE`) → „slope_reliable": pełna rekomendacja obu końców.
+- ANALIZA KRÓTKO- i DŁUGOTERMINOWA (obie w zakładce):
+  * długoterminowa = całe dane (`df_pivot_all`) — dobór obu końców krzywej,
+  * krótkoterminowa = wybrany zakres (`df_pivot_range`) — bieżące warunki.
+- WARIANT A (decyzja user): obliczenia NA ŻĄDANIE z telemetrii, BEZ nowych tabel
+  wyników (zgodne z zasadą projektu). `work_mode` jest tani w przeliczaniu.
+- UI (`app/ui/tab_heating_curve.py`): FORMULARZ (T_low przy −15°C, T_high przy +15°C,
+  zadana temp. pokojowa) zapisywany przez `set_setting`. Nastawy POWIĄZANE Z POMPĄ —
+  klucze z sufiksem `pump_id` (`curve_low_temp_<pump_id>`, `curve_high_temp_<pump_id>`,
+  `curve_room_target_<pump_id>`), budowane przez `_curve_setting_keys(pump_id)`. Każda
+  pompa ma własną krzywą fizyczną, więc nastawy NIE są współdzielone (pompa2 ma osobne).
+  `render()` dostaje `pump_id` z `2_Analiza.py` (`_sel_id`); `key` widgetów też per pompa
+  (Streamlit nie miesza stanu). Podgląd krzywej (wartości wody dla kilku temperatur),
+  kolorowe komunikaty, tabela duty cycle per przedział. Jasne komunikaty gdy: brak
+  danych / za mały zakres temperatur / dominacja strefy 2.
+- DATA ZMIANY KRZYWEJ (domyka pętlę „zmień krzywą → oceń"): pole `st.date_input`
+  (`curve_changed_at_<pump_id>`) auto-ustawiane na dziś przy zapisie nastaw (edytowalne).
+  Po zmianie krzywej dane sprzed i po mają RÓŻNE krzywe — mieszanie zafałszowałoby duty
+  cycle. Rozwiązanie: `detect_heating_episodes(since_ts=...)` pomija epizody rozpoczęte
+  przed datą zmiany. OBIE analizy (długo- i krótkoterminowa) respektują `since_ts`.
+  Pusta data = cała historia. Konwersja daty lokalnej → epoch przez `_date_to_epoch`
+  (wzór odporny na Windows, korekta `SERVER_TIMEZONE_OFFSET`).
+- BŁĄD NAPRAWIONY (`app/ui/analiza_helpers.py`): `zone_select` zapisany w bazie jako
+  `val_str` „0".."3"; `load_analiza_pivot` konwertował przez `BOOL_MAP` (zna tylko 0/1),
+  więc wartości 2/3 ginęły (NaN) → filtr strefy nie dostawał danych. Dodano dedykowaną
+  konwersję `zone_select` z `val_str` na liczbę (0/1/2/3) PRZED `BOOL_MAP`.
+- STAN DANYCH (potwierdzone w bazie, pompa Wiktor): obecnie grzeje głównie STREFA 2
+  (47 epizodów Z2 vs 6 epizodów Z1/obu). Strefa 2 ma stałą temp. wody → analiza krzywej
+  (Z1) będzie wiarygodna dopiero gdy strefa 1 zacznie realnie grzać (sezon grzewczy).
+  Zakładka wykrywa dominację Z2 (osobne wywołanie `detect_heating_episodes` z
+  `curve_zones={Z2}`) i wyświetla 🔁 ostrzeżenie zamiast mylących rekomendacji.
+- TESTY: `tests/test_heating_curve.py` (34): model krzywej (interpolacja/ekstrapolacja,
+  slope), epizody (ON/OFF, heat, krótkie, otwarte na końcu, amb_avg, off_after,
+  ciągły ON = jeden epizod), filtr strefy (Z1/obie liczone, sama Z2 pomijana,
+  `curve_zones={Z2}` liczy tylko Z2, brak danych strefy = licz wszystko), duty cycle,
+  rekomendacja (norma, za ciepło oba końce, wąski zakres jeden koniec, progi 8/15,
+  brak formularza), klucze nastaw PER POMPA (`_curve_setting_keys` — pump_id w kluczu,
+  rozłączność pompa1/pompa2, fallback 'default', klucz daty zmiany), filtr daty
+  (`since_ts` — epizody przed datą zmiany pomijane, None=całość) i konwersja daty→epoch
+  (`_date_to_epoch`/`_parse_iso_date`). Pakiet 198 PASS (było 158).
+
+---
+
+## Ustalenia i zmiany — 2026-09-30
+
+### Zewnętrzny termometr temp. powietrza w pomieszczeniu — powiązany z pompą1 (2026-09-30)
+- CEL (user): dodać obsługę zewnętrznego termometru Tuya (device_id
+  `bf9134db09e1ea78cdskae`), powiązanego z pompa1 (Wiktor). To samo konto Tuya →
+  dane płyną istniejącym strumieniem Pulsar (zero nowego pollingu).
+- ROZPOZNANIE (wariant A — potwierdzenie danymi, nie zgadywanie): najpierw dodano
+  device_id do whitelisty collectora, po spłynięciu ramek odczytano realne kody z bazy
+  PRODUKCYJNEJ. Termometr wysyła 5 kodów (~co 15 min, czujnik bateryjny):
+  - `temp_current` i `va_temperature` — DUPLIKAT tej samej temperatury (ten sam ts,
+    ta sama wartość), skala ×0.1 (260 surowo = 26.0°C; zakres próbek 143–260 = 14.3–26.0°C).
+  - `humidity_value` i `va_humidity` — duplikat wilgotności (×1, np. 75%).
+  - `battery_percentage` — poziom baterii (×1, 100%).
+- DECYZJE (user): (1) skala zgodna z pompą — kody temperatury w TEMP_CODES (dzielone
+  ×0.1 przy ZAPISIE); (2) temperatura widoczna na wykresie „Przebieg parametrów" na
+  Panelu; (3) kanoniczny kod `va_temperature`, duplikat `temp_current` UKRYTY na wykresie;
+  (4) surowe próbki sprzed wdrożenia poprawić ÷10. Wilgotność/bateria zbierane, ale
+  NIE pokazywane w UI (poza zakresem — user chciał tylko temperaturę).
+- MODEL DANYCH (`config.py`): pozycja pompy w PUMPS rozszerzona o pole `thermo_id`
+  (analogicznie do `meter_id`). pompa1 → `bf9134db09e1ea78cdskae`, pompa2 → None.
+  Nowy zbiór `THERMO_DEV_IDS` (frozenset, bez None) do whitelisty collectora.
+  `DEVICE_NAMES` → „Termometr Wiktor". Kody `va_temperature`/`temp_current` dodane do
+  TEMP_CODES. Histereza `HISTERESIS_CONFIG` dla obu: active 0.2 / idle 0.3°C.
+  PARAM_INFO: `va_temperature` → „Temp. pokojowa (termometr)"; `temp_current` BEZ
+  etykiety (duplikat, dzięki czemu nie trafia do multiselektu wykresu).
+- COLLECTOR (`tuya_client.py`): `THERMO_DEV_IDS` dodane do whitelisty w
+  `handle_parsed_payload` (obok HEAT_PUMP_DEV_IDS/ENERGY_METER_DEV_IDS). Termometr
+  idzie ścieżką `else` (jak pompa) przez DeadbandFilter — nie jest licznikiem.
+- WATCHDOG (`main.py`): `THERMO_DEV_IDS` wykluczone z alertów utraty komunikacji
+  (czujnik bateryjny raportuje rzadko ~15 min → cisza = norma, jak licznik energii).
+- UI (`Panel.py`): `_load_chart_data` dostała param `thermo_id` — dla pompy z termometrem
+  dociąga `va_temperature` (osobne urządzenie, więc osobne zapytanie po thermo_id) i
+  scala z danymi pompy. Tylko kanoniczny kod (temp_current pomijany). Pompa2 (bez
+  termometru) — parametr się nie pojawia. `sel_thermo_id` z selected_pump.get("thermo_id").
+- KOREKTA PRÓBEK (produkcja): 14 surowych próbek va_temperature/temp_current sprzed
+  deployu podzielono ÷10 (skrypt idempotentny — dzieli tylko val_num > 60, bo realna
+  temp. pokojowa nigdy > 60°C; surowe to 143–260). Zakres po korekcie 14.3–26.0°C.
+- TESTY: `tests/test_config.py` — thermo_id w pompach (pompa1 ma, pompa2 None),
+  THERMO_DEV_IDS bez None (dokładnie 1 element), nazwa termometru, kody w TEMP_CODES,
+  etykieta va_temperature + brak etykiety temp_current. 158 PASS (było 152).
+- WDROŻENIE: zmiana w collectorze + config + dashboard → `fly deploy` (zgoda user).
+  Skala TEMP_CODES działa dla NOWYCH zapisów (po deployu); historyczne poprawione skryptem.
+
+### Panel — konfigurowalny wykres „Przebieg parametrów" z ręcznym zapisem (2026-09-30)
+- CEL (user): wykres „Przebieg parametrów" był predefiniowany — umożliwić konfigurację
+  wybranych parametrów, zapamiętaną i dostępną w tej samej konfiguracji na urządzeniu.
+- DECYZJE (user, kolejno doprecyzowane): trwałość PER URZĄDZENIE/przeglądarka
+  (localStorage, jak wybór pompy — NIE globalnie w bazie); zapis RĘCZNY przyciskiem
+  (nie automatyczny przy każdej zmianie — przypadkowa zmiana nie nadpisuje układu);
+  klucz WSPÓLNY dla obu pomp (jeden układ).
+- ROZWIĄZANIE (wyłącznie UI, bez nowych zależności — `streamlit-local-storage` już jest):
+  - `app/ui/helpers.py`: nowe `get_chart_params(default)` i `persist_chart_params(codes)`,
+    klucz localStorage `tuya_chart_params_panel`, wartość jako lista kodów w JSON.
+    Reużyty istniejący `_get_local_storage()`. `get_chart_params` ma pełny fallback na
+    default: brak zapisu, zepsuty JSON, nie-lista, pusta lista, LS niedostępny.
+  - `Panel.py`: domyślny wybór multiselektu z localStorage (przefiltrowany do kodów
+    realnie obecnych w danych), przycisk „💾 Zapisz układ wykresu" → persist + st.toast.
+    Bez kliknięcia zmiana działa tylko w bieżącym widoku.
+- TESTY: `tests/test_helpers_pump.py` — klasa TestChartParams (6: fallback pusty,
+  roundtrip zapis→odczyt, zepsuty JSON, nie-lista, pusta lista, LS niedostępny).
+
+### Panel — przycisk „Bilans" w nagłówku (obrys, wyrównany) (2026-09-30)
+- OBJAW (user): link do „Bilans" na górze Panelu był zwykłym `st.page_link` (nieładny
+  napis, niewyrównany, CSS `.st-key-pump_header button` go nie obejmował — to `<a>`, nie
+  `<button>`).
+- ROZWIĄZANIE (`Panel.py`, tylko UI): `st.page_link` → `st.button` + `st.switch_page`
+  (prawdziwy przycisk w tym samym kontenerze `pump_header`). CSS rozdzielony: reguła
+  wspólna (wysokość/padding/wyrównanie) + osobno przycisk odświeżania (kolorowe tło
+  stanu) i przycisk „📊 Bilans" (BEZ wypełnienia, ramka 2px w kolorze akcentu stanu +
+  hover). `accent` dobierany do stanu (heating/running/off). Zawijanie na wąskim ekranie
+  już obsłużone regułą `.st-key-pump_header nowrap` w styles.py.
+
+### PARAM_INFO — poprawki opisów wg specyfikacji DP (2026-09-30)
+- ŹRÓDŁO: `beko DP codes.py` (model GRUNDIG/Beko 000004wtcv) + weryfikacja odczytem bazy
+  (realne kody obu pomp).
+- POPRAWKA (potwierdzona danymi): `idr_temp_set` (DP 164) to „Indoor Room Temperature
+  Setpoint" = NASTAWA POKOJOWA, nie „z krzywej". W bazie `idr_temp_set=25.0`, a
+  `auto_heat_temp_set_curve` w ogóle nie występuje. Etykieta „Nastawa z krzywej" →
+  „Nastawa pokojowa" (desc: „Zadana temperatura powietrza w pomieszczeniu").
+- DODANE ETYKIETY (kody realnie wysyłane przez pompę, wcześniej surowe na wykresie):
+  `a_eev`, `dc_fan2`, `ac_fan`, `auto_run_tar_mode`, nastawy chłodzenia/auto
+  (`cool_temp_set`, `cool_temp_set_z2`, `auto_heat_temp_set_z1/z2`, `auto_cool_temp_set_z2`),
+  flagi (`pump_sta`, `protect_flag`, `freeze`, `fault_flag`, `switch`, `mute`, `holiday_sw`).
+  Pominięto czysto konfiguracyjne limity (`zone1_*`/`zone2_*`/`hw_*`/`indoor_temp_*`/
+  `twc_*`/`mode_valid`/`no_twc_*`) — bez wartości diagnostycznej na wykresie przebiegu.
+- POTWIERDZONO: `valve` (DP 117) = zawór 4-drożny (rewers grzanie/chłodzenie), NIE CO/CWU
+  → decyzja o klasyfikacji CO/CWU po `work_mode` (nie po zaworze) jest słuszna.
+- USUNIĘTO nieaktualny komentarz TODO przy device_id pompy2 (id jest realne, dane płyną).
+
+### Baza produkcyjna — usunięto wpisy tidr (2026-09-30)
+- POWÓD (user): `tidr` (temperatura pokojowa z czujnika wewnętrznego) nieużywana; część
+  danych historycznych była niedzielona (max 2193 przy poprawnych ~21.3 — niespójna skala).
+- WYKONANIE (produkcja Fly, decyzja user: bez backupu): skrypt Pythona przez sftp
+  (sqlite3 CLI niedostępny w kontenerze) usunął WSZYSTKIE wpisy `tidr` z
+  `/data/tuya_telemetry.db`. Usunięto 28352, pozostało 0.
+- ZAKRES: tylko baza PRODUKCYJNA (lokalnej nie ruszano). `tidr` MA być nadal zbierany
+  (bez zmian w collectorze) — usunięto tylko istniejące wpisy. `tidr` NIE jest w
+  ENERGY_CODES → usunięcie nie wpływa na energię/SCOP.
+
+---
+
 ## Ustalenia i zmiany — 2026-09-27
 
 ### HDD liczony z danych pogodowych, nie z czujnika amb_temp (2026-09-27)

@@ -120,6 +120,51 @@ class TestPersistPumpChoice:
         assert helpers.get_selected_pump()["id"] == "pompa2"
 
 
+class TestChartParams:
+    """Konfiguracja wykresu 'Przebieg parametrów' — localStorage, zapis ręczny."""
+
+    def test_default_when_empty(self, fake_env) -> None:
+        """Brak zapisu → fallback na default."""
+        _, _ = fake_env
+        default = ["out_water_temp", "amb_temp"]
+        assert helpers.get_chart_params(default) == default
+
+    def test_roundtrip_save_read(self, fake_env) -> None:
+        """Zapis → odczyt zwraca zapisaną listę (nie default)."""
+        _, _ = fake_env
+        helpers.persist_chart_params(["comp_freq", "flow_rate"])
+        assert helpers.get_chart_params(["out_water_temp"]) == ["comp_freq", "flow_rate"]
+
+    def test_broken_json_falls_back(self, fake_env) -> None:
+        """Zepsuty JSON w localStorage → fallback na default."""
+        _, fls = fake_env
+        fls.setItem(helpers._LS_CHART_PARAMS_KEY, "{nie-json")
+        default = ["amb_temp"]
+        assert helpers.get_chart_params(default) == default
+
+    def test_non_list_json_falls_back(self, fake_env) -> None:
+        """Poprawny JSON, ale nie lista → fallback na default."""
+        _, fls = fake_env
+        fls.setItem(helpers._LS_CHART_PARAMS_KEY, '{"a": 1}')
+        default = ["amb_temp"]
+        assert helpers.get_chart_params(default) == default
+
+    def test_empty_list_falls_back(self, fake_env) -> None:
+        """Zapisana pusta lista → fallback na default (nie pusty wykres)."""
+        _, fls = fake_env
+        fls.setItem(helpers._LS_CHART_PARAMS_KEY, "[]")
+        default = ["amb_temp"]
+        assert helpers.get_chart_params(default) == default
+
+    def test_falls_back_when_ls_unavailable(self, monkeypatch) -> None:
+        """localStorage niedostępny (None) → fallback na default, brak wyjątku."""
+        monkeypatch.setattr(helpers, "_get_local_storage", lambda: None)
+        default = ["amb_temp"]
+        assert helpers.get_chart_params(default) == default
+        # persist nie może rzucić wyjątku, gdy LS brak
+        helpers.persist_chart_params(["comp_freq"])
+
+
 
 class TestGetPumpActivity:
     """3-stanowa aktywność agregatu: heating / running / off.

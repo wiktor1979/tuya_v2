@@ -11,6 +11,7 @@ from app.config import (
     TUYA_ACCOUNTS, PULSAR_SERVER_EU, 
     MQ_ENV_PROD, TEMP_CODES, HISTERESIS_CONFIG, MAX_HEARTBEAT_SEC,
     ENERGY_METER_DEV_ID, ENERGY_METER_DEV_IDS, HEAT_PUMP_DEV_IDS,
+    THERMO_DEV_IDS,
 )
 
 
@@ -240,7 +241,8 @@ class TuyaPulsarClient:
             if (self.monitored_devices
                     and dev_id not in self.monitored_devices
                     and dev_id not in ENERGY_METER_DEV_IDS
-                    and dev_id not in HEAT_PUMP_DEV_IDS):
+                    and dev_id not in HEAT_PUMP_DEV_IDS
+                    and dev_id not in THERMO_DEV_IDS):
                 return  # Ignoruj urządzenia spoza listy monitorowanych
 
             if dev_id and status_list:

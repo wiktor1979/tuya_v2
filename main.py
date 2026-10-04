@@ -20,6 +20,7 @@ from app.config import (
     TELEGRAM_ENABLED, DAILY_REPORT_HOUR, HEAT_PUMP_DEV_ID,
     SERVER_TIMEZONE_OFFSET, ENERGY_METER_DEV_ID,
     TUYA_ACCOUNTS, FLOW_RATE_ON_THRESHOLD,
+    THERMO_DEV_IDS,
     list_pumps,
 )
 
@@ -160,6 +161,12 @@ def communication_watchdog_loop():
             # przysyła ramek nawet przez 1-2 h — heartbeat nie tworzy zapisów, więc
             # cisza jest normalna, nie oznacza utraty komunikacji.
             if dev_id == ENERGY_METER_DEV_ID:
+                continue
+
+            # Zewnętrzny termometr pomijany: czujnik temperatury raportuje rzadko
+            # (tylko przy zmianie wartości), więc dłuższa cisza jest normalna i nie
+            # oznacza utraty komunikacji — jak licznik energii.
+            if dev_id in THERMO_DEV_IDS:
                 continue
 
             silent_sec = now - last_ts

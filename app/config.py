@@ -42,12 +42,14 @@ PUMPS: list[dict] = [
         "name": "Wiktor",
         "device_id": "bf874f7ae72aca1fc23op0",
         "meter_id": "bf215e9c483af020b12cak",
+        "thermo_id": "bf9134db09e1ea78cdskae",  # zewnętrzny termometr temp. powietrza w pomieszczeniu
     },
     {
         "id": "pompa2",
         "name": "Karol",
-        "device_id": "bf16fd09ab4030b8f8ktge",  # TODO: wpisać realne device_id drugiej pompy
+        "device_id": "bf16fd09ab4030b8f8ktge",
         "meter_id": None,               # druga pompa BEZ licznika energii
+        "thermo_id": None,              # bez zewnętrznego termometru
     },
 ]
 """Konfiguracja monitorowanych pomp. Nazwa i id stałe (nieedytowalne w UI)."""
@@ -94,12 +96,21 @@ ENERGY_METER_DEV_IDS: frozenset[str] = frozenset(
 # Zbiór wszystkich device_id pomp (telemetria) — do whitelist collectora.
 HEAT_PUMP_DEV_IDS: frozenset[str] = frozenset(p["device_id"] for p in PUMPS)
 
+# Zbiór wszystkich device_id zewnętrznych termometrów (temp. powietrza w pomieszczeniu) —
+# do whitelist collectora. Termometr powiązany z pompą przez pole 'thermo_id' w PUMPS.
+# Pomija pompy bez termometru (thermo_id=None).
+THERMO_DEV_IDS: frozenset[str] = frozenset(
+    p["thermo_id"] for p in PUMPS if p.get("thermo_id")
+)
+
 # Czytelne nazwy urządzeń — używane w powiadomieniach Telegram i UI zamiast device_id.
 DEVICE_NAMES: dict[str, str] = {}
 for _p in PUMPS:
     DEVICE_NAMES[_p["device_id"]] = _p["name"]
     if _p["meter_id"]:
         DEVICE_NAMES[_p["meter_id"]] = f"Licznik {_p['name']}"
+    if _p.get("thermo_id"):
+        DEVICE_NAMES[_p["thermo_id"]] = f"Termometr {_p['name']}"
 DEVICE_NAMES[MANUAL_METER_DEV_ID] = "Licznik ręczny"
 
 
@@ -127,6 +138,9 @@ TEMP_CODES: frozenset[str] = frozenset({
     "heat_temp_set_z2", "cool_temp_set_z2",
     "auto_heat_temp_set_z1", "auto_heat_temp_set_z2", "auto_cool_temp_set_z2",
     "idr_temp_set",
+    # Zewnętrzny termometr temp. powietrza w pomieszczeniu (skala ×0.1, jak pompa).
+    # va_temperature i temp_current to duplikat tej samej wartości (dwa kody DP).
+    "va_temperature", "temp_current",
 })
 
 # --- Parametry całkowania ---
@@ -229,6 +243,10 @@ HISTERESIS_CONFIG: dict = {
     "tank_temp":      {"active": 0.2, "idle": 0.5, "last_value": None},
     "amb_temp":       {"active": 0.5, "idle": 0.8, "last_value": None},
     "tidr":           {"active": 0.5, "idle": 0.5, "last_value": None},
+    # Zewnętrzny termometr — temperatura pokojowa (dzielona ×0.1 przy zapisie, jak pompa).
+    # va_temperature i temp_current to duplikat tej samej wartości; oba przez próg 0.2/0.3°C.
+    "va_temperature": {"active": 0.2, "idle": 0.3, "last_value": None},
+    "temp_current":   {"active": 0.2, "idle": 0.3, "last_value": None},
     "disc_temp":      {"active": 0.5, "idle": 1.5, "last_value": None},
     "back_temp":      {"active": 0.5, "idle": 1.5, "last_value": None},
     "ac_curr":        {"active": 2.0, "idle": 5.0, "last_value": None},
@@ -272,21 +290,38 @@ PARAM_INFO: dict[str, dict[str, str]] = {
     "disc_temp": {"label": "Tłoczenie sprężarki", "desc": "Temperatura gazu na wylocie sprężarki"},
     "back_temp": {"label": "Powrót do sprężarki", "desc": "Temperatura czynnika na ssaniu sprężarki"},
     "tidr": {"label": "Temp. pokojowa", "desc": "Temperatura wewnętrzna pomieszczenia"},
+    "va_temperature": {"label": "Temp. pokojowa (termometr)", "desc": "Temperatura powietrza w pomieszczeniu z zewnętrznego termometru"},
     "heat_temp_set": {"label": "Nastawa CO Z1", "desc": "Zadana temperatura zasilania — strefa 1"},
     "hot_water_temp_set": {"label": "Nastawa CWU", "desc": "Zadana temperatura wody użytkowej"},
     "heat_temp_set_z2": {"label": "Nastawa CO Z2", "desc": "Zadana temperatura zasilania — strefa 2 / podłogówka"},
-    "idr_temp_set": {"label": "Nastawa z krzywej", "desc": "Temperatura zadana z krzywej grzewczej"},
+    "idr_temp_set": {"label": "Nastawa pokojowa", "desc": "Zadana temperatura powietrza w pomieszczeniu"},
     "ac_vol": {"label": "Napięcie AC", "desc": "Napięcie zasilania [V]"},
     "ac_curr": {"label": "Prąd AC", "desc": "Prąd pobierany, skala ×0.1 A"},
     "comp_freq": {"label": "Częst. sprężarki", "desc": "Częstotliwość pracy sprężarki [Hz]"},
     "flow_rate": {"label": "Przepływ", "desc": "Przepływ wody, skala ×0.1 m³/h"},
     "m_eev": {"label": "Zawór EEV", "desc": "Pozycja głównego zaworu rozprężnego, 0-480 kroków"},
+    "a_eev": {"label": "Zawór EEV dod.", "desc": "Pozycja dodatkowego zaworu rozprężnego, 0-480 kroków"},
     "dc_fan1": {"label": "Wentylator DC", "desc": "Obroty wentylatora DC, 0-1000 RPM"},
+    "dc_fan2": {"label": "Wentylator DC 2", "desc": "Obroty drugiego wentylatora DC [RPM]"},
+    "ac_fan": {"label": "Tryb wentylatora", "desc": "Bieg wentylatora: close / low_spd / high_spd"},
     "defrost": {"label": "Odszranianie", "desc": "Cykl odszraniania parownika"},
     "valve": {"label": "Zawór 4-drożny", "desc": "Rewers grzanie/chłodzenie (koreluje ze sprężarką, nie CO/CWU)"},
     "fault": {"label": "Kody błędów", "desc": "Bitmapa błędów E01-E16, P01-P14"},
     "work_mode": {"label": "Tryb pracy", "desc": "heat=CO, hot_water=CWU, heat_hot_water=CO+CWU (źródło podziału)"},
     "zone_select": {"label": "Aktywna strefa", "desc": "0=brak, 1=Z1, 2=Z2, 3=obie"},
+    "auto_run_tar_mode": {"label": "Cel trybu auto", "desc": "Co pompa robi w trybie auto: 0=chłodzenie, 1=ogrzewanie"},
+    "cool_temp_set": {"label": "Nastawa chłodzenia Z1", "desc": "Zadana temperatura chłodzenia — strefa 1"},
+    "cool_temp_set_z2": {"label": "Nastawa chłodzenia Z2", "desc": "Zadana temperatura chłodzenia — strefa 2"},
+    "auto_heat_temp_set_z1": {"label": "Nastawa auto CO Z1", "desc": "Zadana temperatura auto grzanie — strefa 1"},
+    "auto_heat_temp_set_z2": {"label": "Nastawa auto CO Z2", "desc": "Zadana temperatura auto grzanie — strefa 2"},
+    "auto_cool_temp_set_z2": {"label": "Nastawa auto chłodz. Z2", "desc": "Zadana temperatura auto chłodzenie — strefa 2"},
+    "pump_sta": {"label": "Pompa obiegowa", "desc": "Status pompy wody (pracuje ~2 min po sprężarce)"},
+    "protect_flag": {"label": "Ochrona", "desc": "Flaga ochrony urządzenia"},
+    "freeze": {"label": "Antyzamrożenie", "desc": "Ochrona antyzamrożeniowa"},
+    "fault_flag": {"label": "Flaga awarii", "desc": "Flaga sygnalizująca awarię"},
+    "switch": {"label": "Wyłącznik główny", "desc": "Główny wyłącznik pompy"},
+    "mute": {"label": "Tryb cichy", "desc": "Tryb cichy (Silent)"},
+    "holiday_sw": {"label": "Tryb urlopowy", "desc": "Tryb urlopowy (Holiday)"},
 }
 
 FAULT_BITMAP_LABELS: list[str] = [

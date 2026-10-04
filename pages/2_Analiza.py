@@ -526,6 +526,8 @@ with tab_defr:
 # ==============================================================================
 with tab_curve:
     tab_heating_curve.render(
-        df_pivot=df_pivot_all,
+        df_pivot_all=df_pivot_all,
+        df_pivot_range=df_pivot,
         weather_df=weather_df_analysis if not weather_df_analysis.empty else None,
+        pump_id=_sel_id,
     )

@@ -24,6 +24,8 @@ from app.ui.helpers import (
     get_live_heating_mode,
     pump_supports_cwu,
     weather_daily_for_range,
+    get_chart_params,
+    persist_chart_params,
 )
 from app.ui.labels import METRICS
 from app.config import (
@@ -51,6 +53,7 @@ with st.sidebar:
     _sel_id = selected_pump["id"]
     sel_device_id = selected_pump["device_id"]
     sel_meter_id = selected_pump["meter_id"]
+    sel_thermo_id = selected_pump.get("thermo_id")
 
     selected_range = st.selectbox("Zakres SCOP:", [
         "Dzisiaj", "3 dni", "7 dni", "30 dni", "90 dni",
@@ -124,24 +127,42 @@ def render_live():
     if activity == PUMP_ACTIVITY_HEATING:
         hdr_bg = "linear-gradient(90deg,#E67E22,#e94560)"
         hdr_fg = "#fff"
+        accent = "#E67E22"
     elif activity == PUMP_ACTIVITY_RUNNING:
         hdr_bg = "linear-gradient(90deg,#27AE60,#2ECC71)"
         hdr_fg = "#fff"
+        accent = "#2ECC71"
     else:
         hdr_bg = "#3a3f4b"
         hdr_fg = "#bbb"
+        accent = "#7a8090"
     st.markdown(
         f"""<style>
+        /* Wspólne: oba przyciski w nagłówku tej samej wysokości i wyrównane */
         .st-key-pump_header button {{
-            background: {hdr_bg} !important;
-            color: {hdr_fg} !important;
-            border: none !important;
             font-size: 1.05rem !important;
             font-weight: 700 !important;
             padding: 0.5rem 1rem !important;
             width: 100% !important;
             line-height: 1.3 !important;
-            transition: background 0.3s ease;
+            transition: background 0.3s ease, border-color 0.3s ease;
+        }}
+        /* Przycisk odświeżania — kolorowe tło zależne od stanu pompy */
+        .st-key-pump_header_btn button {{
+            background: {hdr_bg} !important;
+            color: {hdr_fg} !important;
+            border: none !important;
+        }}
+        /* Przycisk Bilans — bez wypełnienia, tylko ramka w kolorze akcentu stanu */
+        .st-key-pump_header_bilans_btn button {{
+            background: transparent !important;
+            color: {accent} !important;
+            border: 2px solid {accent} !important;
+        }}
+        .st-key-pump_header_bilans_btn button:hover {{
+            background: {accent}22 !important;
+            color: {accent} !important;
+            border-color: {accent} !important;
         }}
         </style>""",
         unsafe_allow_html=True,
@@ -153,7 +174,8 @@ def render_live():
             if st.button(f"🔥 {selected_pump['name']} · {now_txt}", key="pump_header_btn", help="Kliknij, aby odświeżyć teraz"):
                 st.rerun()
         with col_bilans:
-            st.page_link("pages/1_Bilans.py", label="Bilans")
+            if st.button("📊 Bilans", key="pump_header_bilans_btn", help="Przejdź do bilansu i SCOP"):
+                st.switch_page("pages/1_Bilans.py")
 
     # --- COP chwilowy (do metryki) ---
     cop_val = status.get("comp_freq", {}).get("val_num", 0) or 0
@@ -238,8 +260,16 @@ st.subheader("📈 Przebieg parametrów")
 
 
 @st.cache_data(ttl=60)
-def _load_chart_data(date_from: str, device_id: str = HEAT_PUMP_DEV_ID) -> pd.DataFrame:
-    """Surowe dane do wykresu (resample do wizualizacji, NIE do obliczeń)."""
+def _load_chart_data(
+    date_from: str,
+    device_id: str = HEAT_PUMP_DEV_ID,
+    thermo_id: str = None,
+) -> pd.DataFrame:
+    """Surowe dane do wykresu (resample do wizualizacji, NIE do obliczeń).
+
+    Jeśli pompa ma powiązany termometr (thermo_id), dociąga też jego temperaturę
+    pokojową jako kod 'va_temperature'. Duplikat 'temp_current' jest pomijany
+    (ten sam pomiar pod innym kodem DP)."""
     import sqlite3
     from app.config import DB_FILE, SERVER_TIMEZONE_OFFSET
     try:
@@ -253,22 +283,48 @@ def _load_chart_data(date_from: str, device_id: str = HEAT_PUMP_DEV_ID) -> pd.Da
             ORDER BY timestamp
         """
         df = pd.read_sql_query(query, conn, params=(device_id, date_from))
+
+        # Termometr powiązany z pompą — tylko va_temperature (kanoniczny; temp_current
+        # to duplikat, pomijany, by nie dublować linii na wykresie).
+        if thermo_id:
+            thermo_query = f"""
+                SELECT datetime(timestamp, 'unixepoch', '{off:+d} hours') as czas,
+                       code, val_num
+                FROM telemetry
+                WHERE device_id = ? AND code = 'va_temperature'
+                  AND timestamp >= strftime('%s', ?, '{-off:+d} hours')
+                ORDER BY timestamp
+            """
+            thermo_df = pd.read_sql_query(thermo_query, conn, params=(thermo_id, date_from))
+            if not thermo_df.empty:
+                df = pd.concat([df, thermo_df], ignore_index=True)
+
         conn.close()
         return df
     except Exception:
         return pd.DataFrame()
 
 
-chart_df = _load_chart_data(date_from, device_id=sel_device_id)
+chart_df = _load_chart_data(date_from, device_id=sel_device_id, thermo_id=sel_thermo_id)
 if not chart_df.empty:
     all_codes = chart_df["code"].unique().tolist()
     default_temps = [c for c in ["tank_temp", "in_water_temp", "out_water_temp", "heat_temp_set", "amb_temp"]
                      if c in all_codes]
 
+    # Konfiguracja wykresu zapamiętana w localStorage (per urządzenie, wspólna dla pomp).
+    # Zapisany układ ograniczamy do kodów realnie obecnych w danych (nieaktualne pomijamy).
+    saved_params = [c for c in get_chart_params(default_temps) if c in all_codes]
+    initial = saved_params if saved_params else default_temps
+
     selected = st.multiselect(
-        "Parametry:", options=all_codes, default=default_temps,
+        "Parametry:", options=all_codes, default=initial,
         format_func=get_param_label,
     )
+
+    # Zapis ręczny — dopiero po kliknięciu przycisku (przypadkowa zmiana nie nadpisuje układu).
+    if st.button("💾 Zapisz układ wykresu"):
+        persist_chart_params(selected)
+        st.toast("Zapisano układ wykresu na tym urządzeniu.")
 
     if selected:
         plot_df = chart_df[chart_df["code"].isin(selected) & chart_df["val_num"].notnull()].copy()
